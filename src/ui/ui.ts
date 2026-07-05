@@ -478,6 +478,10 @@ export function createUi(
           Upload SVG file(s)
           <input id="svgUpload" type="file" accept=".svg,image/svg+xml" multiple />
         </label>
+        <div class="switch-row">
+          <span class="switch-label">Remove background ${tip('Drops a solid rectangle painted behind the artwork so only the logo is kept. Turn off to keep the SVG background.')}</span>
+          <label class="toggle"><input id="removebgSvg" type="checkbox" /><span class="slider"></span></label>
+        </div>
         <button class="primary" id="generateSvg" style="margin-top: 10px; width: 100%;">Generate</button>
       </div>
 
@@ -591,6 +595,9 @@ export function createUi(
   });
 
   $<HTMLInputElement>('removebg').addEventListener('change', (e) =>
+    cb.onRemoveBg((e.target as HTMLInputElement).checked)
+  );
+  $<HTMLInputElement>('removebgSvg').addEventListener('change', (e) =>
     cb.onRemoveBg((e.target as HTMLInputElement).checked)
   );
 
@@ -1683,6 +1690,7 @@ export function createUi(
     }
     keychain.checked = state.keychain;
     $<HTMLInputElement>('removebg').checked = state.removeBg;
+    $<HTMLInputElement>('removebgSvg').checked = state.removeBg;
     $<HTMLInputElement>('showswitch').checked = state.showSwitch;
 
     // Update Import Mode tabs and panels

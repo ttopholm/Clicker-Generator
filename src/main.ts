@@ -194,7 +194,9 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
   },
   onRemoveBg: (on) => {
     store.set({ removeBg: on });
-    if (store.get().importMode === 'image' && hasImage()) reprocess();
+    const mode = store.get().importMode;
+    if (mode === 'image' && hasImage()) reprocess();
+    else if (mode === 'svg' && currentSvgText) reprocess();
   },
   onView: (mode) => {
     store.set({ view: mode });
@@ -798,7 +800,7 @@ function reprocess() {
     }
     try {
       store.set({ building: true, status: 'Parsing SVG…' });
-      regionSet = parseSvg(currentSvgText);
+      regionSet = parseSvg(currentSvgText, { removeBg: s.removeBg });
     } catch (e: any) {
       store.set({ building: false, status: 'Error: ' + e.message });
       return;

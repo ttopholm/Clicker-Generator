@@ -50,7 +50,7 @@ function strokeGeomToContours(geom: THREE.BufferGeometry): Ring[] {
   return contours;
 }
 
-export function parseSvg(svgText: string): RegionSet {
+export function parseSvg(svgText: string, opts: { removeBg?: boolean } = {}): RegionSet {
   const data = new SVGLoader().parse(svgText);
   const box = new THREE.Box2(
     new THREE.Vector2(Infinity, Infinity),
@@ -131,6 +131,45 @@ export function parseSvg(svgText: string): RegionSet {
     }
   }
 
+  // Signed shoelace area of a ring (outer +, holes −); a region's area is the magnitude
+  // of its rings' sum. Drives both background detection and carve-priority coverage.
+  const ringArea = (r: Ring): number => {
+    let a = 0;
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+      a += r[j][0] * r[i][1] - r[i][0] * r[j][1];
+    }
+    return a / 2;
+  };
+  const regionArea = (rings: Ring[]): number =>
+    Math.abs(rings.reduce((sum, r) => sum + ringArea(r), 0));
+
+  // "Remove background" for SVG — the vector parallel to the raster edge-flood-fill: a
+  // filled colour that spans the whole artboard AND fills its own bbox (a rectangle
+  // painted behind the art) is the background. Drop it so only the logo remains.
+  // Guards: keep at least one colour, and require a rectangle-like fill so a big round
+  // logo that merely spans the canvas is not mistaken for a backdrop.
+  if (opts.removeBg && groups.size > 1) {
+    const fw = (box.max.x - box.min.x) || 1;
+    const fh = (box.max.y - box.min.y) || 1;
+    const SPAN = 0.92; // must cover ≥92% of the artboard on each axis
+    const RECT = 0.85; // must fill ≥85% of its own bbox (i.e. is rectangle-like)
+    let bgHex: string | null = null;
+    let bgArea = -1;
+    for (const [hex, g] of groups) {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const r of g.rings) for (const [x, y] of r) {
+        if (x < x0) x0 = x; if (x > x1) x1 = x;
+        if (y < y0) y0 = y; if (y > y1) y1 = y;
+      }
+      const gw = x1 - x0, gh = y1 - y0;
+      const area = regionArea(g.rings);
+      const spans = gw >= SPAN * fw && gh >= SPAN * fh;
+      const rectLike = area >= RECT * (gw * gh || Infinity);
+      if (spans && rectLike && area > bgArea) { bgArea = area; bgHex = hex; }
+    }
+    if (bgHex) groups.delete(bgHex);
+  }
+
   const allRings: Ring[] = [];
   groups.forEach(g => allRings.push(...g.rings));
 
@@ -138,10 +177,17 @@ export function parseSvg(svgText: string): RegionSet {
     throw new Error('No drawable paths found in this SVG.');
   }
 
-  const cx = (box.min.x + box.max.x) / 2;
-  const cy = (box.min.y + box.max.y) / 2;
-  const dx = box.max.x - box.min.x;
-  const dy = box.max.y - box.min.y;
+  // Bbox over the (possibly background-stripped) rings, so the remaining art is
+  // recentered and normalized to fill the cap and drives the outline silhouette.
+  let bMinX = Infinity, bMinY = Infinity, bMaxX = -Infinity, bMaxY = -Infinity;
+  for (const r of allRings) for (const [x, y] of r) {
+    if (x < bMinX) bMinX = x; if (x > bMaxX) bMaxX = x;
+    if (y < bMinY) bMinY = y; if (y > bMaxY) bMaxY = y;
+  }
+  const cx = (bMinX + bMaxX) / 2;
+  const cy = (bMinY + bMaxY) / 2;
+  const dx = bMaxX - bMinX;
+  const dy = bMaxY - bMinY;
   const maxSide = Math.max(dx, dy) || 1;
   const aspect = dy !== 0 ? dx / dy : 1;
 
@@ -151,15 +197,21 @@ export function parseSvg(svgText: string): RegionSet {
       -(y - cy) / maxSide // flip Y to match image tracer (Y-up)
     ]);
 
-  const totalPoints = allRings.reduce((sum, r) => sum + r.length, 0);
+  // Coverage drives carve priority in buildClicker (smallest-AREA colour is placed
+  // first so fine detail wins over big fills). It MUST be an area fraction to match
+  // the image pipeline (types.ts: "fraction of foreground pixels"); measuring it by
+  // point count instead let a low-poly background rectangle rank as the "smallest"
+  // colour, claim the whole cap, and subtract every real colour to nothing.
+  const totalArea =
+    Array.from(groups.values()).reduce((sum, g) => sum + regionArea(g.rings), 0) || 1;
 
   const regions = Array.from(groups.values()).map(g => {
     const normRings = g.rings.map(normalizeRing);
-    const ringPoints = g.rings.reduce((sum, r) => sum + r.length, 0);
+    const cov = regionArea(g.rings) / totalArea;
     return {
       quantRgb: g.rgb,
-      components: [{ rings: normRings, coverage: ringPoints / totalPoints }],
-      coverage: ringPoints / totalPoints
+      components: [{ rings: normRings, coverage: cov }],
+      coverage: cov
     };
   });
 
