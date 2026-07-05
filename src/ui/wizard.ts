@@ -1,7 +1,9 @@
 // Bambu-style image → model wizard. A single modal step:
-//   Preprocessing — crop ratio, keep background, thickness, tone/color sliders.
-// On confirm it hands the adjusted image (background intact) + params back; the
-// caller runs the trace/build pipeline (background removal is re-derived there).
+//   Preprocessing — crop ratio, thickness, tone/color sliders.
+// Background removal is toggled in the main sidebar (not here), so the wizard just
+// tones/crops the image. On confirm it hands the adjusted image (background intact) +
+// params back; the caller runs the trace/build pipeline (background removal is
+// re-derived there, defaulting to keepBackground = false).
 // Color extraction and recoloring now happen live in the 3D preview, so the
 // wizard no longer asks for a color mode or a filament-customization pass.
 import type { RgbaImage } from '../image/decode';
@@ -93,17 +95,26 @@ export function runWizard(opts: WizardOpts) {
       <div class="wz-modal lg">
         <div class="wz-head">Image Preprocessing</div>
         <div class="wz-body">
-          <div class="wz-canvas checker" id="wzPrev"></div>
+          <div class="wz-left">
+            <div class="wz-canvas checker" id="wzPrev"></div>
+            <div class="wz-info">
+              <div class="wz-info-title">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>
+                What kind of image works best
+              </div>
+              <ul>
+                <li><strong>Simple, flat colors</strong> with bold, clearly separated shapes.</li>
+                <li><strong>2D illustrations</strong>, logos, icons or clipart convert best.</li>
+              </ul>
+              <p class="wz-info-warn"><strong>Don't work well:</strong> photos of real objects with shadows, gradients or texture usually won't convert.</p>
+              <p>Missing details after processing? Turn up <strong>Contrast</strong> and <strong>Exposure</strong> to make the image bolder and bring them back.</p>
+            </div>
+          </div>
           <div class="wz-controls">
             <div class="wz-label">Crop Ratio</div>
             <div class="seg" id="wzRatio">${RATIOS.map(
               ([k, l]) => `<button data-r="${k}">${l}</button>`,
             ).join('')}</div>
-
-            <div class="wz-row spread">
-              <span class="wz-label">Keep Background</span>
-              <label class="toggle"><input type="checkbox" id="wzKeep" /><span class="track"></span></label>
-            </div>
 
             <div class="wz-row spread">
               <span class="wz-label">Image Thickness</span>
@@ -122,7 +133,7 @@ export function runWizard(opts: WizardOpts) {
           </div>
         </div>
         <div class="wz-foot">
-          <span class="wz-error" id="wzErr" hidden>No outline found — adjust the image and try again.</span>
+          <span class="wz-error" id="wzErr" hidden>No outline found. Adjust the image and try again.</span>
           <button id="wzCancel">Cancel</button>
           <button class="primary" id="wzDone">Confirm</button>
         </div>
@@ -153,13 +164,6 @@ export function runWizard(opts: WizardOpts) {
         redraw();
       });
     }
-
-    const keep = overlay.querySelector<HTMLInputElement>('#wzKeep')!;
-    keep.checked = params.keepBackground;
-    keep.addEventListener('change', () => {
-      params.keepBackground = keep.checked;
-      redraw();
-    });
 
     const thick = overlay.querySelector<HTMLInputElement>('#wzThick')!;
     thick.value = String(params.thicknessMm);

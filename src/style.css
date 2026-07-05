@@ -282,6 +282,14 @@ details.section-collapsible[open] > summary { padding-bottom: 14px; }
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 25%, transparent);
 }
 
+/* Fit steppers (switch socket + switch stem tolerance): − [value] + row. */
+.tol-stepper { display: flex; align-items: center; gap: 8px; }
+.tol-stepper .btn { flex: 0 0 auto; padding: 7px 18px; font-size: 16px; }
+.tol-stepper .tol-val {
+  flex: 1; text-align: center; font-size: 15px; color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
 /* Legacy prow kept for any remaining uses */
 .prow {
   display: grid;
@@ -530,6 +538,24 @@ button.secondary:disabled { opacity: .5; cursor: default; }
 
 .wz-body { display: grid; }
 .wz-modal.lg .wz-body { grid-template-columns: 1fr 400px; gap: 28px; }
+.wz-left { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.wz-info {
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: 12px;
+  padding: 14px 16px; font-size: 13.5px; line-height: 1.5; color: var(--muted);
+}
+.wz-info-title {
+  display: flex; align-items: center; gap: 8px;
+  font-weight: 600; color: var(--text); margin-bottom: 10px; font-size: 14.5px;
+}
+.wz-info-title svg { color: var(--accent); flex: 0 0 auto; }
+.wz-info ul { margin: 0 0 10px; padding-left: 20px; }
+.wz-info li { margin-bottom: 5px; }
+.wz-info p { margin: 0; }
+.wz-info strong { color: var(--text); font-weight: 600; }
+.wz-info-warn {
+  margin: 0 0 10px !important; padding-top: 10px; border-top: 1px solid var(--line);
+}
+.wz-info-warn strong { color: #ff6b6b; }
 .wz-controls { display: flex; flex-direction: column; gap: 15px; }
 .wz-label { font-size: 16px; font-weight: 600; color: var(--text); }
 .wz-sub { color: var(--muted); font-size: 15px; text-align: center; line-height: 1.5; }
@@ -665,6 +691,74 @@ button.secondary:disabled { opacity: .5; cursor: default; }
   display: flex;
   justify-content: flex-end;
   gap: 12px;
+}
+
+/* ---- "What's new" update notification ---- */
+.whats-new-card {
+  gap: 16px;
+}
+.whats-new-badge {
+  align-self: flex-start;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--accent-text);
+  background: var(--accent);
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+.whats-new-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.whats-new-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  font-size: 14.5px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.whats-new-list li strong {
+  color: var(--text);
+  font-weight: 600;
+}
+.whats-new-list li em {
+  font-style: normal;
+  color: var(--text);
+  font-weight: 500;
+}
+.whats-new-check {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--accent);
+}
+.whats-new-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+}
+.whats-new-dismiss {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--muted);
+  cursor: pointer;
+  user-select: none;
+}
+.whats-new-dismiss input {
+  margin: 0;
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
 }
 
 /* ---- Onboarding Tutorial ---- */
@@ -1601,6 +1695,31 @@ button.fil-chip:active {
   box-shadow: 0 1px 6px rgba(91, 157, 255, 0.35);
 }
 
+/* ===== Separate-letters toggle (text mode, floating under the mode bar) ===== */
+.letters-toggle {
+  position: absolute;
+  top: 62px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 8px 7px 14px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--line);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.18);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text);
+  white-space: nowrap;
+  pointer-events: auto;
+}
+.letters-toggle[hidden] { display: none; }
+
 /* ===== Extrude Gizmo Tooltip ===== */
 .extrude-tooltip {
   position: absolute;
@@ -1775,6 +1894,13 @@ button.fil-chip:active {
 }
 .btn.primary:hover { filter: brightness(1.07); color: var(--accent-text); }
 
+/* Chamfer toggle row inside the Extrude panel. */
+.extrude-chamfer-row {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-top: 12px; font-size: 13px; color: var(--text);
+}
+.extrude-chamfer-row .toggle { flex: 0 0 auto; }
+
 /* Small explanatory line at the bottom of the floating panels. */
 .panel-hint {
   font-size: 11px;
@@ -1782,6 +1908,68 @@ button.fil-chip:active {
   color: var(--muted);
   text-align: center;
   margin-top: 4px;
+}
+
+/* ===== Switch position D-pad (left sidebar, "3 · Switch") ===== */
+.switch-pad-hint {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+  margin: 0 0 14px;
+}
+.switch-pad {
+  display: grid;
+  grid-template-columns: repeat(3, 44px);
+  grid-template-rows: repeat(3, 44px);
+  grid-template-areas:
+    "rotl up   rotr"
+    "left ctr  right"
+    ".    down  .";
+  gap: 8px;
+  justify-content: center;
+  margin: 0 auto;
+}
+.switch-pad-btn,
+.switch-pad-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--text);
+  border-radius: 10px;
+  cursor: pointer;
+  padding: 0;
+  transition: border-color 0.12s, color 0.12s, background 0.12s, transform 0.06s;
+}
+.switch-pad-btn:hover,
+.switch-pad-center:hover { border-color: var(--accent); color: var(--accent); }
+.switch-pad-btn:active,
+.switch-pad-center:active { transform: scale(0.92); }
+.switch-pad-btn svg { width: 22px; height: 22px; }
+.switch-pad-center svg { width: 18px; height: 18px; }
+.switch-pad-center {
+  color: var(--muted);
+  border-radius: 50%;
+  border-style: dashed;
+}
+.pad-up { grid-area: up; }
+.pad-left { grid-area: left; }
+.switch-pad-center { grid-area: ctr; }
+.pad-right { grid-area: right; }
+.pad-down { grid-area: down; }
+.pad-rotl { grid-area: rotl; }
+.pad-rotr { grid-area: rotr; }
+/* Rotate buttons read as secondary to the directional arrows. */
+.pad-rotl, .pad-rotr { color: var(--muted); }
+.pad-rotl svg, .pad-rotr svg { width: 18px; height: 18px; }
+.switch-pad-readout {
+  margin-top: 14px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
 }
 
 /* ===== Undo / Redo toolbar (top-left of viewport) ===== */

@@ -12,6 +12,8 @@ export interface Viewer {
   setSection(axis: SectionAxis, pos: number): void;
   setSwitch(mesh: MeshData | null): void;
   showSwitch(on: boolean): void;
+  /** Move + rotate the preview switch to the (clamped) offset the geometry was built with. */
+  setSwitchOffset(x: number, y: number, rotationDeg?: number): void;
   renderToPng(): Promise<Blob | null>;
   setTheme(theme: string): void;
   /** Register a callback fired when the user clicks a colored part of the model, or null if clicking empty space. */
@@ -287,6 +289,12 @@ export function createViewer(container: HTMLElement): Viewer {
     switchGroup.visible = on;
   }
 
+  function setSwitchOffset(x: number, y: number, rotationDeg = 0) {
+    switchGroup.position.set(x, y, 0);
+    // Rotate about the switch axis (Z) to match the geometry's socket/stem rotation.
+    switchGroup.rotation.z = (rotationDeg * Math.PI) / 180;
+  }
+
   function setSection(axis: SectionAxis, pos: number) {
     sectionAxis = axis;
     sectionPos = pos;
@@ -485,6 +493,7 @@ export function createViewer(container: HTMLElement): Viewer {
     setSection,
     setSwitch,
     showSwitch,
+    setSwitchOffset,
     renderToPng,
     setTheme,
     onPartPick,

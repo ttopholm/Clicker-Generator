@@ -48,6 +48,10 @@ const store = createStore<UiState>({
   topThickness: 1.5,
   imageDepth: 0.8,
   tolerance: 0.4,
+  stemTolerance: 0,
+  switchOffsetX: 0,
+  switchOffsetY: 0,
+  switchRotation: 0,
   smoothing: 0.1,
   keychain: false,
   removeBg: true,
@@ -67,6 +71,8 @@ const store = createStore<UiState>({
     // One control for the whole clicker base — bevels top + bottom body edges together.
     { target: 'clickerBase', style: 'chamfer', radius: 0.5 },
   ],
+  extrudeChamfer: false,
+  separateLetters: false,
   extrudeHeight: null,
   componentHeights: {},
   selectedParts: [],
@@ -141,8 +147,41 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
     store.set({ imageDepth: mm });
     debouncedRebuild();
   },
-  onTolerance: (mm) => {
-    store.set({ tolerance: mm });
+  onSocketTolStep: (delta) => {
+    // "Switch socket" fit = clearance between the top and the base it presses into.
+    // Baseline is 0.4 mm (shown as 0); + loosens, − tightens. Clamp to a safe range.
+    const next = Math.round(Math.max(0.1, Math.min(1.0, store.get().tolerance + delta)) * 100) / 100;
+    store.set({ tolerance: next });
+    debouncedRebuild();
+  },
+  onStemTolStep: (delta) => {
+    // "Switch stem" fit = XY scale offset on the cap's keycap-mount stem (0.2 mm steps).
+    // + loosens (opens the cross socket), − tightens. 0 = as authored.
+    const next = Math.round(Math.max(-1.0, Math.min(1.0, store.get().stemTolerance + delta)) * 10) / 10;
+    store.set({ stemTolerance: next });
+    debouncedRebuild();
+  },
+  onSwitchNudge: (dx, dy) => {
+    // Bound the requested offset; the worker does the precise clamp to the cap
+    // footprint and reports the applied offset back (moving the preview switch).
+    const LIMIT = 15;
+    const clamp = (v: number) => Math.max(-LIMIT, Math.min(LIMIT, v));
+    const s = store.get();
+    store.set({
+      switchOffsetX: clamp(s.switchOffsetX + dx),
+      switchOffsetY: clamp(s.switchOffsetY + dy),
+    });
+    debouncedRebuild();
+  },
+  onSwitchReset: () => {
+    store.set({ switchOffsetX: 0, switchOffsetY: 0, switchRotation: 0 });
+    debouncedRebuild();
+  },
+  onSwitchRotate: (deltaDeg) => {
+    // Rotate the switch assembly a couple of degrees per press; clamp so the socket
+    // stays sensibly aligned with the design.
+    const next = Math.round(Math.max(-30, Math.min(30, store.get().switchRotation + deltaDeg)));
+    store.set({ switchRotation: next });
     debouncedRebuild();
   },
   onKeychain: (on) => {
@@ -309,6 +348,20 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
       debouncedQuietRebuild();
     }
   },
+  onExtrudeChamfer: (on) => {
+    // Global, part-independent toggle: when on, every raised (extruded) color part
+    // gets a small beveled top edge. Not tied to the current selection — flip it once
+    // and all extruded parts pick up the chamfer (buildClicker applies it per part).
+    store.set({ extrudeChamfer: on });
+    debouncedQuietRebuild();
+  },
+  onSeparateLetters: (on) => {
+    // Text only: re-trace the word so letters are either merged into one element (off)
+    // or split into one selectable/colorable part per glyph (on). Clear the selection
+    // since the part names change with the grouping.
+    store.set({ separateLetters: on, selectedParts: [] });
+    reprocess();
+  },
   onUndo: () => undo(),
   onRedo: () => redo(),
   onRefresh: () => refreshDesign(),
@@ -320,8 +373,8 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
 // (reprocess) starts a fresh baseline. Restoring rebuilds the geometry.
 const HISTORY_FIELDS = [
   'palette', 'paletteOverrides', 'partOverrides', 'bodyColorRgb', 'baseColorOverride',
-  'componentHeights', 'edgeSettings', 'baseShape', 'capWidthMm', 'topThickness',
-  'imageDepth', 'tolerance', 'keychain',
+  'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'capWidthMm', 'topThickness',
+  'imageDepth', 'tolerance', 'stemTolerance', 'switchOffsetX', 'switchOffsetY', 'switchRotation', 'keychain',
 ] as const;
 let history: string[] = [];
 let histIndex = -1;
@@ -610,6 +663,8 @@ worker.onmessage = (e: MessageEvent<GeometryResponse>) => {
       latestParts = msg.parts;
       viewer.setParts(msg.parts, !pendingHistoryReset);
       viewer.setView(store.get().view);
+      // Keep the preview switch on the (clamped) axis + rotation the geometry was built around.
+      viewer.setSwitchOffset(msg.switchOffset?.[0] ?? 0, msg.switchOffset?.[1] ?? 0, store.get().switchRotation);
 
       // Extrude heights are baked into the geometry now — do NOT translate the
       // meshes too, or the raised part would float a second step above the model.
@@ -771,7 +826,7 @@ function reprocess() {
   } else if (s.importMode === 'text') {
     try {
       store.set({ building: true, status: 'Generating Text…' });
-      regionSet = parseLetter(currentText, currentFontId, 15);
+      regionSet = parseLetter(currentText, currentFontId, 15, s.separateLetters);
     } catch (e: any) {
       store.set({ building: false, status: 'Error: ' + e.message });
       return;
@@ -835,14 +890,19 @@ function rebuild(quiet = false) {
     borderWidth: isText ? 3.5 : 2.6,
     capProud: 4.0,
     tolerance: s.tolerance,
+    stemTolerance: s.stemTolerance,
     colorBleed: 0.12,
     stepHeight: 0.6,
     travel: 4.0,
     floorThickness: 1.6,
+    switchOffsetX: s.switchOffsetX,
+    switchOffsetY: s.switchOffsetY,
+    switchRotation: s.switchRotation,
     keychainHole: s.keychain,
     baseFilamentRgb: capBaseColor,
     bodyColorRgb: s.bodyColorRgb ?? ([120, 124, 130] as RGB),
     edgeSettings: s.edgeSettings,
+    extrudeChamfer: s.extrudeChamfer,
     componentHeights: s.componentHeights,
   };
 
@@ -1005,6 +1065,10 @@ function saveProject() {
       topThickness: s.topThickness,
       imageDepth: s.imageDepth,
       tolerance: s.tolerance,
+      stemTolerance: s.stemTolerance,
+      switchOffsetX: s.switchOffsetX,
+      switchOffsetY: s.switchOffsetY,
+      switchRotation: s.switchRotation,
       smoothing: s.smoothing,
       removeBg: s.removeBg,
       importMode: s.importMode,
@@ -1021,6 +1085,8 @@ function saveProject() {
       baseColorOverride: s.baseColorOverride,
       partOverrides: s.partOverrides,
       edgeSettings: s.edgeSettings,
+      extrudeChamfer: s.extrudeChamfer,
+      separateLetters: s.separateLetters,
       componentHeights: s.componentHeights,
     },
     palette: s.palette, // filament mappings
@@ -1055,6 +1121,10 @@ async function loadProject(file: File) {
       topThickness: set.topThickness ?? store.get().topThickness,
       imageDepth: set.imageDepth ?? store.get().imageDepth,
       tolerance: set.tolerance ?? store.get().tolerance,
+      stemTolerance: set.stemTolerance ?? 0,
+      switchOffsetX: set.switchOffsetX ?? 0,
+      switchOffsetY: set.switchOffsetY ?? 0,
+      switchRotation: set.switchRotation ?? 0,
       smoothing: set.smoothing ?? store.get().smoothing,
       removeBg: set.removeBg ?? store.get().removeBg,
       currentIconName: currentIconName || 'circle',
@@ -1064,6 +1134,8 @@ async function loadProject(file: File) {
       paletteOverrides: set.paletteOverrides ?? [],
       partOverrides: set.partOverrides ?? {},
       edgeSettings: set.edgeSettings ?? store.get().edgeSettings,
+      extrudeChamfer: set.extrudeChamfer ?? false,
+      separateLetters: set.separateLetters ?? false,
       componentHeights: set.componentHeights ?? {},
     });
 

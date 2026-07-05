@@ -4,7 +4,7 @@ import Module from 'manifold-3d';
 import wasmUrl from 'manifold-3d/manifold.wasm?url';
 import { parse3MF } from '../geometry/threemfImport';
 import { buildClicker } from '../geometry/buildClicker';
-import type { GeometryRequest, GeometryResponse, ClickerPart } from '../types';
+import type { GeometryRequest, GeometryResponse } from '../types';
 
 type Wasm = Awaited<ReturnType<typeof Module>>;
 
@@ -118,7 +118,7 @@ self.onmessage = async (e: MessageEvent<GeometryRequest>) => {
 
     if (msg.type === 'buildClicker') {
       if (!socket || !stem) throw new Error('Assets not initialized');
-      const parts: ClickerPart[] = buildClicker(
+      const { parts, switchOffset } = buildClicker(
         wasm,
         socket,
         stem,
@@ -128,7 +128,7 @@ self.onmessage = async (e: MessageEvent<GeometryRequest>) => {
       );
       const transfer: Transferable[] = [];
       for (const p of parts) transfer.push(p.vertProperties.buffer, p.triVerts.buffer);
-      post({ type: 'parts', parts }, transfer);
+      post({ type: 'parts', parts, switchOffset }, transfer);
       return;
     }
   } catch (err) {

@@ -100,11 +100,23 @@ export interface BuildParams {
   imageMargin: number; // flat base-color frame between the image and the cap edge
   borderWidth: number; // raised body border around the cap (the bezel wall)
   capProud: number; // how far the cap top sticks up above the body border at rest (≈ travel → flush when pressed)
-  tolerance: number; // slip-fit gap between cap outer wall and body well wall
+  tolerance: number; // slip-fit gap between cap outer wall and body well wall ("switch socket" fit)
+  /** XY scale offset (mm) applied to the cap's keycap-mount stem so it fits the MX
+   *  switch: +looser (opens the cross socket, easier to press on), −tighter. 0 = as
+   *  authored. Only the XY footprint scales — Z is kept so the cap rest height is fixed. */
+  stemTolerance: number;
   colorBleed: number; // tiny outward grow on each color so neighbors never leave a gap
   stepHeight: number; // mm per height level for raised color relief
   travel: number; // switch press travel the well must clear (~3.5–4 mm)
   floorThickness: number;
+  /** Shift the MX switch off the design centre (mm, +X = right). Lets the switch sit
+   *  under solid material when the centre of the design is hollow, so the well/skirt
+   *  never needs a protective bulge. Clamped so the switch stays inside the cap. */
+  switchOffsetX: number;
+  /** Shift the MX switch off the design centre (mm, +Y = toward the design's top). */
+  switchOffsetY: number;
+  /** Rotate the MX switch (socket + stem) about its axis, in degrees (+ = clockwise). */
+  switchRotation: number;
   keychainHole: boolean; // add a keyring loop on the body (+Y edge)
   baseFilamentRgb: RGB; // cap backing + stem color
   bodyColorRgb: RGB;
@@ -112,6 +124,8 @@ export interface BuildParams {
   componentHeights: Record<string, number>;
   /** Edge modifications (fillet / chamfer) for body and cap edges. */
   edgeSettings: EdgeSetting[];
+  /** Global toggle: chamfer the top edge of every raised (extruded) color part. */
+  extrudeChamfer: boolean;
 }
 
 /** Mesh payload (transferable). First 3 of each `numProp` stride are x,y,z. */
@@ -157,5 +171,7 @@ export type GeometryResponse =
   // `switchMesh` is the real MX switch, placed in the assembly frame for the preview
   // toggle (display only — never exported).
   | { type: 'initDone'; socketInfo: string; stemInfo: string; switchInfo: string; switchMesh: MeshData }
-  | { type: 'parts'; parts: ClickerPart[] }
+  // `switchOffset` is the offset actually applied (after clamping to the cap
+  // footprint), so the preview switch mesh can be moved to match the geometry.
+  | { type: 'parts'; parts: ClickerPart[]; switchOffset: [number, number] }
   | { type: 'error'; message: string };

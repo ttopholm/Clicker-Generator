@@ -125,11 +125,19 @@ export async function importFontFile(file: File): Promise<FontOption> {
   return option;
 }
 
-export function parseLetter(text: string, fontId: string, maxLen = 30): RegionSet {
+/**
+ * Build a RegionSet from text.
+ * @param separate  When false (default) every letter is merged into one element so the
+ *   whole word selects/recolors/extrudes together. When true each glyph becomes its own
+ *   region (part `top-color-{k}-0`), so letters can be picked and colored individually.
+ */
+export function parseLetter(text: string, fontId: string, maxLen = 30, separate = false): RegionSet {
   if (!text.trim()) throw new Error('Type a letter first.');
 
   const option = FONT_OPTIONS.find((font) => font.id === fontId) || FONT_OPTIONS[0];
-  const contours: Ring[] = [];
+  // Each glyph is a group of rings (its outline + any holes), kept grouped so we can
+  // either merge them all into one element or expose each letter on its own.
+  const glyphs: Ring[][] = [];
   const box = new THREE.Box2(
     new THREE.Vector2(Infinity, Infinity),
     new THREE.Vector2(-Infinity, -Infinity)
@@ -147,17 +155,18 @@ export function parseLetter(text: string, fontId: string, maxLen = 30): RegionSe
       new THREE.Vector2(Infinity, Infinity),
       new THREE.Vector2(-Infinity, -Infinity)
     );
-    const lineContours: Ring[] = [];
+    const lineGlyphs: Ring[][] = [];
 
     for (const shape of shapes) {
       const extracted = shape.extractPoints(16);
+      const glyphRings: Ring[] = [];
       if (extracted.shape.length >= 3) {
         const ring: Ring = [];
         for (const p of extracted.shape) {
           lineBox.expandByPoint(p);
           ring.push([p.x, p.y]);
         }
-        lineContours.push(ring);
+        glyphRings.push(ring);
       }
       for (const hole of extracted.holes) {
         if (hole.length >= 3) {
@@ -166,29 +175,32 @@ export function parseLetter(text: string, fontId: string, maxLen = 30): RegionSe
             lineBox.expandByPoint(p);
             ring.push([p.x, p.y]);
           }
-          lineContours.push(ring);
+          glyphRings.push(ring);
         }
       }
+      if (glyphRings.length) lineGlyphs.push(glyphRings);
     }
 
-    if (lineContours.length === 0) continue;
+    if (lineGlyphs.length === 0) continue;
 
     const lineWidth = lineBox.max.x - lineBox.min.x;
     const offsetX = -(lineBox.min.x + lineWidth / 2);
 
-    for (const ring of lineContours) {
-      for (const pt of ring) {
-        pt[0] += offsetX;
-        pt[1] += currentY;
-        box.expandByPoint(new THREE.Vector2(pt[0], pt[1]));
+    for (const glyphRings of lineGlyphs) {
+      for (const ring of glyphRings) {
+        for (const pt of ring) {
+          pt[0] += offsetX;
+          pt[1] += currentY;
+          box.expandByPoint(new THREE.Vector2(pt[0], pt[1]));
+        }
       }
-      contours.push(ring);
+      glyphs.push(glyphRings);
     }
 
     currentY -= 130; // Move down for the next line
   }
 
-  if (!contours.length) throw new Error('No drawable outlines found in this font.');
+  if (!glyphs.length) throw new Error('No drawable outlines found in this font.');
 
   const cx = (box.min.x + box.max.x) / 2;
   const cy = (box.min.y + box.max.y) / 2;
@@ -203,14 +215,21 @@ export function parseLetter(text: string, fontId: string, maxLen = 30): RegionSe
       (y - cy) / maxSide // keep Y-up
     ]);
 
-  const normContours = contours.map(normalizeRing);
-
   // Default text color is off-white (#f7f7f5)
-  const regions = [{
-    quantRgb: [247, 247, 245] as RGB,
-    components: [{ rings: normContours, coverage: 1.0 }],
-    coverage: 1.0
-  }];
+  const OFFWHITE: RGB = [247, 247, 245];
+  const outline = glyphs.flat().map(normalizeRing);
 
-  return { regions, outline: normContours, aspect };
+  const regions = separate
+    ? glyphs.map((glyphRings) => ({
+        quantRgb: OFFWHITE,
+        components: [{ rings: glyphRings.map(normalizeRing), coverage: 1.0 }],
+        coverage: 1.0,
+      }))
+    : [{
+        quantRgb: OFFWHITE,
+        components: [{ rings: outline, coverage: 1.0 }],
+        coverage: 1.0,
+      }];
+
+  return { regions, outline, aspect };
 }

@@ -30,7 +30,7 @@ export function buildClicker(
   regions: BuildRegion[],
   outline: Ring[],
   params: BuildParams,
-): ClickerPart[] {
+): { parts: ClickerPart[]; switchOffset: [number, number] } {
   const { Manifold, CrossSection } = wasm;
   const trash: { delete(): void }[] = [];
   const track = <T extends { delete(): void }>(o: T): T => {
@@ -319,11 +319,57 @@ export function buildClicker(
   }
 
   const imageArea = shrink(plate, border, plate); // flat frame around the image
+
+  // --- Switch placement: the user can nudge the switch off the design centre so it
+  //     sits under solid material (a centred switch under a hollow part of the design
+  //     forces the well and skirt to bulge out and "box in" the stem). Clamp so the
+  //     switch clear column never leaves the cap footprint's bounding box — the plate
+  //     is always at least `minCap` wide, so a valid range exists on both axes.
+  const plateBB = plate.bounds();
+  const halfCol = switchClear / 2;
+  const clampAxis = (v: number, lo: number, hi: number) =>
+    lo > hi ? (lo + hi) / 2 : Math.min(hi, Math.max(lo, v));
+  const swX = clampAxis(params.switchOffsetX ?? 0, plateBB.min[0] + halfCol, plateBB.max[0] - halfCol);
+  const swY = clampAxis(params.switchOffsetY ?? 0, plateBB.min[1] + halfCol, plateBB.max[1] - halfCol);
+  // Stem fit: scale the keycap-mount stem in XY so its cross socket opens up (positive
+  // = looser, easier to press onto the switch) or closes (negative = tighter grip).
+  // The offset is applied to the stem's footprint, so e.g. +0.2 grows it 0.2 mm across.
+  // Z is left at scale 1 so the cap rest height, travel and skirt alignment don't move
+  // (stemBB — used for the Z stack — stays valid because only XY changes).
+  let stemSized: Solid = stem;
+  const stemTol = params.stemTolerance ?? 0;
+  if (Math.abs(stemTol) > 0.001) {
+    const stemDim = Math.max(stemBB.max[0] - stemBB.min[0], stemBB.max[1] - stemBB.min[1]);
+    if (stemDim > 0.1) {
+      const f = Math.max(0.5, (stemDim + stemTol) / stemDim);
+      stemSized = track(stem.scale([f, f, 1]));
+    }
+  }
+
+  // The cached socket/stem solids are owned by the worker — rotate/translate into
+  // tracked copies rather than mutating or freeing them. Rotation spins the whole
+  // switch assembly (socket + stem + its clear column) about the axis, so the socket
+  // cut and the cap's stem stay mutually aligned at any angle.
+  const swRot = params.switchRotation ?? 0;
+  const hasSwOffset = Math.abs(swX) > 0.001 || Math.abs(swY) > 0.001;
+  const hasSwRot = Math.abs(swRot) > 0.001;
+  const placeSolid = (s: Solid): Solid => {
+    let r = hasSwRot ? track(s.rotate([0, 0, swRot])) : s;
+    return hasSwOffset ? track(r.translate([swX, swY, 0])) : r;
+  };
+  const socketAt: Solid = placeSolid(socket);
+  const stemAt: Solid = placeSolid(stemSized);
+
   // Well = cap footprint (slip-fit) UNIONED with a guaranteed clear column over the
   // switch, so a concave outline or small cap can never wall off the socket. The body
   // border then wraps whatever shape the well becomes — it bulges out only where a
   // notch would otherwise block the switch.
-  const socketColumn = roundedRect(switchClear, switchClear, 2.5); // centered on the switch axis
+  // Clear column over the switch — rotate it with the switch so its clearance stays
+  // aligned even at an angle (keeps the socket cut inside the exposed area).
+  const socketColumnBase = roundedRect(switchClear, switchClear, 2.5);
+  const socketColumn = track(
+    (hasSwRot ? track(socketColumnBase.rotate(swRot)) : socketColumnBase).translate([swX, swY]),
+  );
   const wellFootprint = simp(track(grow(plate, tol).add(socketColumn))); // cap slips in with `tol`
   const bodyFootprint = simp(grow(wellFootprint, Math.max(0.4, params.borderWidth)));
 
@@ -445,16 +491,30 @@ export function buildClicker(
     let inlay: Solid = extrudeAt(fp, topZ - bottomZ, bottomZ);
     if (inlay.isEmpty()) continue;
 
-    // Round (fillet) or bevel (chamfer) the TOP edge of this color part only if the
-    // user explicitly configured it in Edges mode. Default: no rounding on inlays —
-    // only the outer cap frame and body edges get the default fillet.
+    // Round (fillet) or bevel (chamfer) the TOP edge of this color part. Two sources:
+    //   1. An explicit per-part entry configured in Edges mode (takes priority).
+    //   2. The global "Chamfer edges" toggle from Extrude mode — a fixed chamfer on
+    //      EVERY raised part, not tied to any selection.
+    // Default (neither): no rounding on inlays — only the outer cap frame + body edges.
     const es = params.edgeSettings?.find(s => s.target === r.partName);
+    let edgeStyle: EdgeStyle | null = null;
+    let edgeRadius = 0;
     if (es && es.style !== 'none' && es.radius >= 0.05) {
+      edgeStyle = es.style;
+      edgeRadius = es.radius;
+    } else if (params.extrudeChamfer && heightShift > 0) {
+      // Global toggle: bevel the top edge of every RAISED color part only. Parts you
+      // haven't touched (level 0, flush with the cap top) are left sharp — the chamfer
+      // is meant for the relief you extrude up in Extrude mode.
+      edgeStyle = 'chamfer';
+      edgeRadius = 0.5;
+    }
+    if (edgeStyle) {
       // The bevel can't exceed roughly half the part's height, so on a flat color
       // layer it stays subtle; extrude the part first for a bigger fillet.
-      const radius = Math.min(es.radius, (topZ - bottomZ) * 0.49, 3.0);
+      const radius = Math.min(edgeRadius, (topZ - bottomZ) * 0.49, 3.0);
       if (radius >= 0.05) {
-        const modBlock = createEdgeBevelBlock(fp, radius, es.style, topZ, false);
+        const modBlock = createEdgeBevelBlock(fp, radius, edgeStyle, topZ, false);
         if (modBlock) inlay = track(inlay.subtract(modBlock));
       }
     }
@@ -474,7 +534,7 @@ export function buildClicker(
     const holePrism = extrudeAt(hole2D, slabTopZ - bottomZ + 0.02, bottomZ - 0.01);
     base = track(base.subtract(holePrism));
   }
-  base = track(base.add(stem));
+  base = track(base.add(stemAt));
   if (skirtLen > 0.4) {
     // Root issue: any 2-D ring-minus-stemZone is algebraically identical to
     // punching a notch in the border. The only notch-free approach is to ensure
@@ -489,8 +549,8 @@ export function buildClicker(
     //
     // Z flush: where skirtBasePlate exceeds the original cap plate we add a thin
     // backing fill so the skirt top has something solid above it (no ledge/gap).
-    const stemGuard = 12 + 2 * skirtThickness; // inner edge lands exactly at ±6 mm
-    const stemGuardCs = track(CrossSection.square([stemGuard, stemGuard], true));
+    const stemGuard = 12 + 2 * skirtThickness; // inner edge lands exactly at ±6 mm around the stem
+    const stemGuardCs = track(track(CrossSection.square([stemGuard, stemGuard], true)).translate([swX, swY]));
     const skirtBasePlate = track(plate.add(stemGuardCs));
     const skirtInner = track(skirtBasePlate.offset(-skirtThickness, 'Miter', 2.0));
     if (!sectionIsEmpty(skirtInner)) {
@@ -543,13 +603,28 @@ export function buildClicker(
     const bridge = track(CrossSection.square([loopR * 2, bridgeHeight], true).translate([0, bridgeBottomY + bridgeHeight / 2]));
     const loopFootprint = track(loopCircle.add(bridge));
 
-    const loop = extrudeAt(loopFootprint, th, zb);
+    let loop = extrudeAt(loopFootprint, th, zb);
+    // Give the loop the SAME edge treatment as the body ('clickerBase') so it reads as
+    // one piece — a chamfered body with a sharp loop looks like a bolt-on. Bevel the
+    // loop's top and bottom rims; the buried bridge edges are subsumed by the union.
+    const bodyEdge = params.edgeSettings?.find(
+      (s) => (s.target === 'clickerBase' || s.target === 'baseTop') && s.style !== 'none' && s.radius >= 0.05,
+    );
+    if (bodyEdge) {
+      const r = Math.min(bodyEdge.radius, th * 0.45, 2.5);
+      if (r >= 0.05) {
+        const topBlock = createEdgeBevelBlock(loopFootprint, r, bodyEdge.style, zb + th, false);
+        if (topBlock) loop = track(loop.subtract(topBlock));
+        const botBlock = createEdgeBevelBlock(loopFootprint, r, bodyEdge.style, zb, true);
+        if (botBlock) loop = track(loop.subtract(botBlock));
+      }
+    }
     const hole = extrudeAt(track(CrossSection.circle(holeR, 48).translate([0, cy])), th + 2, zb - 1);
     body = track(track(body.add(loop)).subtract(hole));
   }
 
   // Subtract the well and socket afterwards to ensure the interior cavity is clean
-  body = track(track(body.subtract(well)).subtract(socket));
+  body = track(track(body.subtract(well)).subtract(socketAt));
 
   if (!body.isEmpty()) {
     parts.push(toPart(body, 'body', 'base', params.bodyColorRgb, 'base-body'));
@@ -583,7 +658,7 @@ export function buildClicker(
     }
   }
 
-  return parts;
+  return { parts, switchOffset: [swX, swY] };
 
   /** Apply fillet/chamfer edge modifications to the body solid.
    *  Targets: 'clickerBase' is the merged global control that bevels the body's top

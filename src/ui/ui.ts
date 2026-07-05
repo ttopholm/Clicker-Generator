@@ -10,6 +10,10 @@ import { LUCIDE_ICONS, buildSvg, svgDataUrl } from '../image/lucideIcons';
 /** Base path for bundled public assets (favicon logos, etc.). */
 const ASSET_BASE = import.meta.env.BASE_URL;
 
+/** Neutral top↔base clearance (mm). The "Switch socket tolerance" stepper shows the
+ *  offset from this baseline, so a fresh design reads 0. Keep in sync with the store default. */
+const BASE_SOCKET_TOL = 0.4;
+
 export interface UiState {
   status: string;
   building: boolean;
@@ -20,7 +24,15 @@ export interface UiState {
   capWidthMm: number;
   topThickness: number;
   imageDepth: number;
+  /** Top↔base slip-fit clearance, mm ("switch socket" tolerance). Baseline 0.4 = 0 offset. */
   tolerance: number;
+  /** XY scale offset (mm) on the cap's keycap-mount stem — "switch stem" tolerance. 0 = as authored. */
+  stemTolerance: number;
+  /** MX switch offset from the design centre, mm (+X right, +Y toward the top). */
+  switchOffsetX: number;
+  switchOffsetY: number;
+  /** MX switch rotation about its axis, degrees (+ = clockwise). */
+  switchRotation: number;
   smoothing: number;
   keychain: boolean;
   removeBg: boolean;
@@ -40,6 +52,10 @@ export interface UiState {
   editMode: EditMode;
   /** Edge modification settings (fillet / chamfer). */
   edgeSettings: EdgeSetting[];
+  /** Global toggle: chamfer every raised (extruded) color part. Not tied to selection. */
+  extrudeChamfer: boolean;
+  /** Text mode: when true each letter is its own selectable/colorable part. Default false. */
+  separateLetters: boolean;
   /** Current extrude height being dragged (for HUD display), null when not dragging. */
   extrudeHeight: number | null;
   /** Component-specific heights */
@@ -62,7 +78,16 @@ export interface UiCallbacks {
   onWidth(mm: number): void;
   onTopThickness(mm: number): void;
   onImageDepth(mm: number): void;
-  onTolerance(mm: number): void;
+  /** Step the top↔base ("switch socket") tolerance by delta mm (+ looser, − tighter). */
+  onSocketTolStep(delta: number): void;
+  /** Step the "switch stem" tolerance by delta mm (+ looser / bigger stem, − tighter). */
+  onStemTolStep(delta: number): void;
+  /** Nudge the switch by a step (mm). +dx = right, +dy = toward the design's top. */
+  onSwitchNudge(dx: number, dy: number): void;
+  /** Rotate the switch by a step (degrees, + = clockwise / right). */
+  onSwitchRotate(deltaDeg: number): void;
+  /** Recenter (and unrotate) the switch on the design. */
+  onSwitchReset(): void;
   onKeychain(on: boolean): void;
   onRemoveBg(on: boolean): void;
   onView(mode: ViewMode): void;
@@ -88,6 +113,10 @@ export interface UiCallbacks {
   onEdgeStyle(target: string, style: EdgeStyle): void;
   onEdgeStep(target: string, delta: number): void;
   onExtrudeStep(delta: number): void;
+  /** Global toggle: chamfer every raised (extruded) part. Not tied to selection. */
+  onExtrudeChamfer(on: boolean): void;
+  /** Text mode: toggle splitting the word into per-letter parts. */
+  onSeparateLetters(on: boolean): void;
   onGenerate(): void;
   onUndo(): void;
   onRedo(): void;
@@ -294,11 +323,55 @@ export function createUi(
         </div>
         <div class="prow-stacked">
           <div class="prow-header">
-            <label for="tol">Fit tolerance ${tip('Clearance around the MX switch socket so the cap fits without being too tight or too loose, in mm.')}</label>
-            <input type="text" class="val" id="tolVal" />
+            <label>Switch socket tolerance ${tip('Clearance between the top part and the base it presses into. Press + if the two halves are hard to fit together, − if they feel loose. 0 = default fit.')}</label>
           </div>
-          <input type="range" id="tol" min="0.2" max="0.8" step="0.05" />
+          <div class="tol-stepper" id="socketTolStepper">
+            <button class="btn" id="socketTolMinus" type="button" aria-label="Tighter fit">−</button>
+            <span class="tol-val" id="socketTolVal">0.00 mm</span>
+            <button class="btn" id="socketTolPlus" type="button" aria-label="Looser fit">+</button>
+          </div>
         </div>
+        <div class="prow-stacked">
+          <div class="prow-header">
+            <label>Switch stem (top part) tolerance ${tip('Scales the stem under the top part that grips your MX switch. If the stem is too tight to push onto the switch, press + to loosen it; press − for a firmer grip. Adjusts in 0.2 mm steps.')}</label>
+          </div>
+          <div class="tol-stepper" id="stemTolStepper">
+            <button class="btn" id="stemTolMinus" type="button" aria-label="Tighter stem">−</button>
+            <span class="tol-val" id="stemTolVal">0.0 mm</span>
+            <button class="btn" id="stemTolPlus" type="button" aria-label="Looser stem">+</button>
+          </div>
+        </div>
+        </div>
+      </details>
+
+      <details class="section section-collapsible" id="sectionSwitch">
+        <summary class="label collapsible-head">3 · Switch</summary>
+        <div class="collapsible-body">
+        <p class="switch-pad-hint">Move &amp; rotate the MX switch ${tip('Slide and rotate the MX switch away from the design centre. Handy when the switch doesn\'t sit neatly in the centre of your design.')}</p>
+        <div class="switch-pad" id="switchPad">
+          <button type="button" class="switch-pad-btn pad-rotl" data-rot="3" aria-label="Rotate switch left" title="Rotate left">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
+          </button>
+          <button type="button" class="switch-pad-btn pad-rotr" data-rot="-3" aria-label="Rotate switch right" title="Rotate right">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+          </button>
+          <button type="button" class="switch-pad-btn pad-up" data-dir="up" aria-label="Move switch up (toward top)">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5"/><path d="m5 12 7-7 7 7"/></svg>
+          </button>
+          <button type="button" class="switch-pad-btn pad-left" data-dir="left" aria-label="Move switch left">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5"/><path d="m12 19-7-7 7-7"/></svg>
+          </button>
+          <button type="button" class="switch-pad-center" id="switchReset" aria-label="Center the switch" title="Center">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+          </button>
+          <button type="button" class="switch-pad-btn pad-right" data-dir="right" aria-label="Move switch right">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+          </button>
+          <button type="button" class="switch-pad-btn pad-down" data-dir="down" aria-label="Move switch down (toward bottom)">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14"/><path d="m19 12-7 7-7-7"/></svg>
+          </button>
+        </div>
+        <div class="switch-pad-readout" id="switchReadout">Centered</div>
         </div>
       </details>
     </div>
@@ -750,6 +823,23 @@ export function createUi(
       if (btn) cb.onEditMode(btn.dataset.editmode as EditMode);
     });
 
+    // --- Separate-letters toggle (text mode, Color + Extrude) ---
+    // Off: the whole word is one element (select/recolor/extrude all letters together).
+    // On: each letter is its own part, so you can pick and color letters individually.
+    const lettersToggle = document.createElement('div');
+    lettersToggle.id = 'lettersToggle';
+    lettersToggle.className = 'letters-toggle';
+    lettersToggle.setAttribute('hidden', '');
+    lettersToggle.innerHTML = `
+      <span>Separate letters</span>
+      <label class="toggle"><input type="checkbox" id="separateLetters" /><span class="slider"></span></label>
+    `;
+    viewport.appendChild(lettersToggle);
+    const separateEl = lettersToggle.querySelector('#separateLetters') as HTMLInputElement | null;
+    separateEl?.addEventListener('change', () => {
+      cb.onSeparateLetters(separateEl.checked);
+    });
+
     // --- Extrude Panel ---
     const extrudePanel = document.createElement('div');
     extrudePanel.id = 'extrudePanel';
@@ -762,12 +852,23 @@ export function createUi(
         <button type="button" class="btn" id="extrudeMinus" style="flex:1; font-size:18px;">-</button>
         <button type="button" class="btn" id="extrudePlus" style="flex:1; font-size:18px;">+</button>
       </div>
+      <div class="extrude-chamfer-row">
+        <span>Chamfer edges</span>
+        <label class="toggle"><input type="checkbox" id="extrudeChamfer" /><span class="slider"></span></label>
+      </div>
       <div class="panel-hint">Raises or lowers the selected color. Shift-click parts to select several.</div>
     `;
     viewport.appendChild(extrudePanel);
 
     extrudePanel.querySelector('#extrudeMinus')?.addEventListener('click', () => cb.onExtrudeStep(-1));
     extrudePanel.querySelector('#extrudePlus')?.addEventListener('click', () => cb.onExtrudeStep(1));
+    // Plain uncontrolled checkbox: let the browser flip it natively on click, then
+    // push the new value to the app. update() only re-syncs `.checked` for programmatic
+    // changes (undo/redo, project load) — it won't fight the user's click.
+    const chamferEl = extrudePanel.querySelector('#extrudeChamfer') as HTMLInputElement | null;
+    chamferEl?.addEventListener('change', () => {
+      cb.onExtrudeChamfer(chamferEl.checked);
+    });
 
     // --- Edges Panel ---
     const edgesPanel = document.createElement('div');
@@ -842,8 +943,35 @@ export function createUi(
   topthick.addEventListener('input', () => cb.onTopThickness(+topthick.value));
   const imgdepth = $<HTMLInputElement>('imgdepth');
   imgdepth.addEventListener('input', () => cb.onImageDepth(+imgdepth.value));
-  const tol = $<HTMLInputElement>('tol');
-  tol.addEventListener('input', () => cb.onTolerance(+tol.value));
+
+  // --- Fit steppers: socket (top↔base) 0.05 mm steps, stem (keycap mount) 0.2 mm steps.
+  //     Both are 0-based (+ looser, − tighter). ---
+  $('socketTolMinus').addEventListener('click', () => cb.onSocketTolStep(-0.05));
+  $('socketTolPlus').addEventListener('click', () => cb.onSocketTolStep(0.05));
+  $('stemTolMinus').addEventListener('click', () => cb.onStemTolStep(-0.2));
+  $('stemTolPlus').addEventListener('click', () => cb.onStemTolStep(0.2));
+
+  // --- Switch D-pad: arrows nudge one step; top corners rotate; center resets. ---
+  const SWITCH_STEP = 1; // mm per click
+  const switchPad = $('switchPad');
+  switchPad.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement;
+    const rotBtn = target.closest('[data-rot]') as HTMLElement | null;
+    if (rotBtn) {
+      cb.onSwitchRotate(+rotBtn.dataset.rot!);
+      return;
+    }
+    const btn = target.closest('[data-dir]') as HTMLElement | null;
+    if (!btn) return;
+    switch (btn.dataset.dir) {
+      case 'up': cb.onSwitchNudge(0, SWITCH_STEP); break;
+      case 'down': cb.onSwitchNudge(0, -SWITCH_STEP); break;
+      case 'left': cb.onSwitchNudge(-SWITCH_STEP, 0); break;
+      case 'right': cb.onSwitchNudge(SWITCH_STEP, 0); break;
+    }
+  });
+  $('switchReset').addEventListener('click', () => cb.onSwitchReset());
+
   const keychain = $<HTMLInputElement>('keychain');
   keychain.addEventListener('change', () => cb.onKeychain(keychain.checked));
 
@@ -894,7 +1022,6 @@ export function createUi(
   bindValInput('widthVal', width, cb.onWidth);
   bindValInput('topthickVal', topthick, cb.onTopThickness);
   bindValInput('imgdepthVal', imgdepth, cb.onImageDepth);
-  bindValInput('tolVal', tol, cb.onTolerance);
 
   // --- View tabs ---
   const viewTabs = $('viewTabs');
@@ -1017,12 +1144,68 @@ export function createUi(
     document.body.appendChild(wm);
     const close = () => {
       wm.remove();
-      if (localStorage.getItem('clicker_tutorial_dismissed') !== 'true') {
-        showTutorial();
-      }
+      showUpdate();
     };
     wm.querySelector('#welcomeClose')!.addEventListener('click', close);
     // Also dismiss on backdrop click.
+    wm.addEventListener('click', (e) => {
+      if (e.target === wm) close();
+    });
+  }
+
+  // --- "What's new" update notification ---
+  // Shown once after the welcome modal, before the tutorial. Its "Don't show
+  // again" flag is independent of the tutorial / welcome dismissal keys.
+  const UPDATE_KEY = 'clicker_update_dismissed_2026_07';
+
+  // Continue the on-load chain after welcome + update: open the tutorial unless
+  // the user has permanently dismissed it.
+  function continueAfterWelcome() {
+    if (localStorage.getItem('clicker_tutorial_dismissed') !== 'true') {
+      showTutorial();
+    }
+  }
+
+  function showUpdate() {
+    // Already dismissed for good → skip straight to the tutorial gate.
+    if (localStorage.getItem(UPDATE_KEY) === 'true') {
+      continueAfterWelcome();
+      return;
+    }
+    if (document.querySelector('.welcome-overlay')) return;
+    const wm = document.createElement('div');
+    wm.className = 'welcome-overlay';
+    const check = `<svg class="whats-new-check" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+    wm.innerHTML = `
+      <div class="welcome-card whats-new-card">
+        <div class="whats-new-badge">What's new</div>
+        <h2>Latest updates ✨</h2>
+        <p>A few improvements landed since your last visit:</p>
+        <ul class="whats-new-list">
+          <li>${check}<span><strong>Move &amp; rotate the switch</strong>: reposition and angle the MX switch from the new <em>Switch</em> section in the left menu.</span></li>
+          <li>${check}<span><strong>Fit tolerances</strong>: fine-tune how tightly the switch socket and switch stem fit (top &amp; bottom parts) under <em>More Settings</em>.</span></li>
+          <li>${check}<span><strong>Chamfer edges</strong>: bevel the raised elements while in Extrude mode.</span></li>
+          <li>${check}<span><strong>Separate text elements</strong>: color or extrude individual letters in your custom text.</span></li>
+          <li>${check}<span><strong>Polish &amp; fixes</strong>: lots of smaller improvements across the app.</span></li>
+        </ul>
+        <div class="whats-new-foot">
+          <label class="whats-new-dismiss">
+            <input type="checkbox" id="updateDontShow" />
+            Don't show again
+          </label>
+          <button class="primary" id="updateClose" style="min-width:130px">Got it →</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(wm);
+    const dontShow = wm.querySelector('#updateDontShow') as HTMLInputElement;
+    const close = () => {
+      if (dontShow.checked) localStorage.setItem(UPDATE_KEY, 'true');
+      wm.remove();
+      continueAfterWelcome();
+    };
+    wm.querySelector('#updateClose')!.addEventListener('click', close);
+    // Also dismiss on backdrop click (respects the checkbox too).
     wm.addEventListener('click', (e) => {
       if (e.target === wm) close();
     });
@@ -1072,7 +1255,7 @@ export function createUi(
       focus: 'center',
       target: '#editModeBar',
       title: 'Paint & Height Modes',
-      text: 'Switch between <strong>Color Mode</strong> (to paint individual segments with different colors) and <strong>Extrude Mode</strong> (to adjust thickness, height, and rounded bevels/fillets of the clicker components).',
+      text: 'Switch between <strong>Color Mode</strong> (paint individual segments with different filament colors) and <strong>Extrude Mode</strong> (raise parts of the design, adjust their thickness and height, and chamfer the raised edges). Working with custom <strong>Text</strong>? Toggle <strong>Separate letters</strong> here to color or extrude each letter on its own.',
       arrow: 'up',
       cardPosition: 'left'
     },
@@ -1094,7 +1277,14 @@ export function createUi(
       focus: 'left',
       target: '#geometrySettingsContainer',
       title: 'Geometry & Style Settings',
-      text: 'Expand Section 1 to pick colors and adjust smoothing. Expand Section 2 to add a keychain loop, change thicknesses, and adjust fit tolerances.',
+      text: 'Fine-tune your model in collapsible sections. <strong>1 · Colors &amp; Smoothing</strong> picks filament colors and smooths the outline. <strong>2 · More Settings</strong> adds a keychain loop, changes thicknesses, and dials in the <strong>switch socket &amp; stem fit tolerances</strong> that control how tightly the top and bottom parts clip together.',
+      arrow: 'left'
+    },
+    {
+      focus: 'left',
+      target: '#sectionSwitch',
+      title: 'Position the Switch',
+      text: 'Open the <strong>3 · Switch</strong> section to <strong>move and rotate</strong> the MX switch. Handy when the switch doesn\'t sit neatly in the centre of your design.',
       arrow: 'left'
     },
     {
@@ -1148,6 +1338,9 @@ export function createUi(
       const targetEl = document.querySelector(step.target) as HTMLElement;
       if (targetEl) {
         targetEl.classList.add('tutorial-highlight');
+        // If it's a collapsible section, open it so its contents are visible
+        // while the step describes them (e.g. the Switch move/rotate pad).
+        if (targetEl instanceof HTMLDetailsElement) targetEl.open = true;
       }
 
       card.innerHTML = `
@@ -1471,8 +1664,23 @@ export function createUi(
     setVal('topthickVal', state.topThickness.toFixed(1) + ' mm');
     imgdepth.value = String(state.imageDepth);
     setVal('imgdepthVal', state.imageDepth.toFixed(1) + ' mm');
-    tol.value = String(state.tolerance);
-    setVal('tolVal', state.tolerance.toFixed(2) + ' mm');
+    // Fit steppers show a signed offset from neutral, so a default design reads 0.
+    const fmtSigned = (v: number, dec: number) =>
+      (v > 0.0001 ? '+' : v < -0.0001 ? '−' : '') + Math.abs(v).toFixed(dec) + ' mm';
+    const socketValEl = document.getElementById('socketTolVal');
+    if (socketValEl) socketValEl.textContent = fmtSigned(state.tolerance - BASE_SOCKET_TOL, 2);
+    const stemValEl = document.getElementById('stemTolVal');
+    if (stemValEl) stemValEl.textContent = fmtSigned(state.stemTolerance, 1);
+    const swReadout = document.getElementById('switchReadout');
+    if (swReadout) {
+      const { switchOffsetX: sx, switchOffsetY: sy, switchRotation: sr } = state;
+      const bits: string[] = [];
+      if (Math.abs(sx) >= 0.05 || Math.abs(sy) >= 0.05) {
+        bits.push(`X ${sx > 0 ? '+' : ''}${sx.toFixed(1)} · Y ${sy > 0 ? '+' : ''}${sy.toFixed(1)} mm`);
+      }
+      if (Math.abs(sr) >= 0.5) bits.push(`${sr > 0 ? '↺' : '↻'} ${Math.abs(sr)}°`);
+      swReadout.textContent = bits.length ? bits.join('  ·  ') : 'Centered';
+    }
     keychain.checked = state.keychain;
     $<HTMLInputElement>('removebg').checked = state.removeBg;
     $<HTMLInputElement>('showswitch').checked = state.showSwitch;
@@ -1569,6 +1777,16 @@ export function createUi(
       b.classList.toggle('active', (b as HTMLElement).dataset.editmode === state.editMode);
     });
 
+    // --- Separate-letters toggle: text mode only, in Color + Extrude ---
+    const lettersToggleEl = document.getElementById('lettersToggle');
+    if (lettersToggleEl) {
+      const showLetters = state.importMode === 'text'
+        && (state.editMode === 'color' || state.editMode === 'extrude');
+      lettersToggleEl.toggleAttribute('hidden', !showLetters);
+      const sepInput = lettersToggleEl.querySelector('#separateLetters') as HTMLInputElement | null;
+      if (sepInput) sepInput.checked = state.separateLetters;
+    }
+
     // --- Extrude panel ---
     const extrudePanelEl = document.getElementById('extrudePanel');
     if (extrudePanelEl) {
@@ -1577,7 +1795,14 @@ export function createUi(
         const plusBtn = extrudePanelEl.querySelector('#extrudePlus') as HTMLButtonElement;
         const minusBtn = extrudePanelEl.querySelector('#extrudeMinus') as HTMLButtonElement;
         const labelEl = extrudePanelEl.querySelector('#extrudeLevelLabel');
-        
+        const chamferToggle = extrudePanelEl.querySelector('#extrudeChamfer') as HTMLInputElement | null;
+
+        if (chamferToggle) {
+          // Global, part-independent toggle: always pressable, reflects the single flag.
+          chamferToggle.disabled = false;
+          chamferToggle.checked = state.extrudeChamfer;
+        }
+
         if (state.selectedParts.length === 0) {
           if (plusBtn) plusBtn.disabled = true;
           if (minusBtn) minusBtn.disabled = true;
