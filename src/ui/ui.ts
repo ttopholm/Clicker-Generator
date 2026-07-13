@@ -1,4 +1,4 @@
-import type { BaseShapeKind, EditMode, EdgeSetting, EdgeStyle, PaletteEntry, ViewMode, RGB } from '../types';
+import type { BaseShapeKind, EditMode, EdgeSetting, EdgeStyle, KeychainParams, PaletteEntry, SwitchPlacement, ViewMode, RGB } from '../types';
 import { FILAMENTS } from '../types';
 import type { SectionAxis } from '../viewer/viewer';
 import { SAMPLES } from '../image/sample';
@@ -28,13 +28,12 @@ export interface UiState {
   tolerance: number;
   /** XY scale offset (mm) on the cap's keycap-mount stem — "switch stem" tolerance. 0 = as authored. */
   stemTolerance: number;
-  /** MX switch offset from the design centre, mm (+X right, +Y toward the top). */
-  switchOffsetX: number;
-  switchOffsetY: number;
-  /** MX switch rotation about its axis, degrees (+ = clockwise). */
-  switchRotation: number;
+  /** MX switch placements (1..3): each x/y offset (mm) + rotation (deg) from centre. */
+  switches: SwitchPlacement[];
+  /** Which switch the d-pad drives (0-based). */
+  activeSwitchIndex: number;
   smoothing: number;
-  keychain: boolean;
+  keychain: KeychainParams;
   removeBg: boolean;
   view: ViewMode;
   showSwitch: boolean;
@@ -82,13 +81,25 @@ export interface UiCallbacks {
   onSocketTolStep(delta: number): void;
   /** Step the "switch stem" tolerance by delta mm (+ looser / bigger stem, − tighter). */
   onStemTolStep(delta: number): void;
-  /** Nudge the switch by a step (mm). +dx = right, +dy = toward the design's top. */
+  /** Nudge the active switch by a step (mm). +dx = right, +dy = toward the design's top. */
   onSwitchNudge(dx: number, dy: number): void;
-  /** Rotate the switch by a step (degrees, + = clockwise / right). */
+  /** Rotate the active switch by a step (degrees, + = clockwise / right). */
   onSwitchRotate(deltaDeg: number): void;
-  /** Recenter (and unrotate) the switch on the design. */
+  /** Recenter (and unrotate) the active switch to its default slot. */
   onSwitchReset(): void;
-  onKeychain(on: boolean): void;
+  /** Set the number of switches (1..3); replaces the layout with symmetric defaults. */
+  onSwitchCount(n: number): void;
+  /** Select which switch the d-pad drives (0-based). */
+  onActiveSwitch(i: number): void;
+  /** Reset every switch to the default layout. */
+  onSwitchResetAll(): void;
+  onKeychainToggle(on: boolean): void;
+  /** Rotate the keychain attachment around the body edge by delta degrees. */
+  onKeychainRotate(deltaDeg: number): void;
+  /** Change the keychain ring hole diameter by delta mm. */
+  onKeychainSize(deltaMm: number): void;
+  /** Slide the keychain attachment along the body edge by delta mm. */
+  onKeychainOffset(deltaMm: number): void;
   onRemoveBg(on: boolean): void;
   onView(mode: ViewMode): void;
   onShowSwitch(on: boolean): void;
@@ -272,9 +283,44 @@ export function createUi(
       <details class="section section-collapsible" id="sectionShape">
         <summary class="label collapsible-head">2 · More Settings</summary>
         <div class="collapsible-body">
-        <div class="switch-row" style="margin-bottom: 16px;">
-          <span class="switch-label">Keychain loop ${tip('Adds a small loop to the body so you can attach the clicker to a keychain.')}</span>
-          <label class="toggle"><input id="keychain" type="checkbox" /><span class="slider"></span></label>
+        <div class="keychain-panel" style="margin-bottom: 16px;">
+          <div class="switch-row" style="margin-bottom: 12px;">
+            <span class="switch-label">Keychain ${tip('Adds a keyring attachment to the body so you can clip the clicker to a keychain.')}</span>
+            <label class="toggle"><input id="keychain" type="checkbox" /><span class="slider"></span></label>
+          </div>
+          <div id="keychainOpts" style="display:none;">
+
+            <div class="prow-stacked">
+              <div class="prow-header">
+                <label>Position ${tip('Slides the keychain attachment around the edge of the body.')}</label>
+              </div>
+              <div class="tol-stepper" id="keychainRotStepper">
+                <button class="btn" id="keychainRotMinus" type="button" aria-label="Rotate counter-clockwise">⟲</button>
+                <span class="tol-val" id="keychainAngleVal">90°</span>
+                <button class="btn" id="keychainRotPlus" type="button" aria-label="Rotate clockwise">⟳</button>
+              </div>
+            </div>
+            <div class="prow-stacked">
+              <div class="prow-header">
+                <label>Slide offset ${tip('Slides the keychain along the tangent of the body edge (fine-tuning).')}</label>
+              </div>
+              <div class="tol-stepper" id="keychainOffsetStepper">
+                <button class="btn" id="keychainOffsetMinus" type="button" aria-label="Slide left">−</button>
+                <span class="tol-val" id="keychainOffsetVal">0.0 mm</span>
+                <button class="btn" id="keychainOffsetPlus" type="button" aria-label="Slide right">+</button>
+              </div>
+            </div>
+            <div class="prow-stacked">
+              <div class="prow-header">
+                <label>Hole size ${tip('Diameter of the ring hole — size it for a keyring, cord, or carabiner.')}</label>
+              </div>
+              <div class="tol-stepper" id="keychainSizeStepper">
+                <button class="btn" id="keychainSizeMinus" type="button" aria-label="Smaller hole">−</button>
+                <span class="tol-val" id="keychainSizeVal">5.2 mm</span>
+                <button class="btn" id="keychainSizePlus" type="button" aria-label="Bigger hole">+</button>
+              </div>
+            </div>
+          </div>
         </div>
 
         <div class="global-edges" id="globalEdges" style="display:none; margin-bottom: 16px;">
@@ -347,7 +393,16 @@ export function createUi(
       <details class="section section-collapsible" id="sectionSwitch">
         <summary class="label collapsible-head">3 · Switch</summary>
         <div class="collapsible-body">
-        <p class="switch-pad-hint">Move &amp; rotate the MX switch ${tip('Slide and rotate the MX switch away from the design centre. Handy when the switch doesn\'t sit neatly in the centre of your design.')}</p>
+        <div class="field" style="margin-bottom:10px;">
+          <label>Switches ${tip('Use 1–3 MX switches for larger or wider designs — more click points and stability. Each switch can be moved and rotated individually.')}</label>
+          <div class="tabs" id="switchCount" role="tablist">
+            <button class="tab active" data-count="1" type="button">1</button>
+            <button class="tab" data-count="2" type="button">2</button>
+            <button class="tab" data-count="3" type="button">3</button>
+          </div>
+        </div>
+        <div class="tabs" id="switchChips" role="tablist" style="display:none; margin-bottom:10px;"></div>
+        <p class="switch-pad-hint">Move &amp; rotate the MX switch ${tip('Slide and rotate the selected MX switch away from the design centre. Handy when a switch doesn\'t sit neatly in the centre of your design.')}</p>
         <div class="switch-pad" id="switchPad">
           <button type="button" class="switch-pad-btn pad-rotl" data-rot="3" aria-label="Rotate switch left" title="Rotate left">
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>
@@ -372,6 +427,7 @@ export function createUi(
           </button>
         </div>
         <div class="switch-pad-readout" id="switchReadout">Centered</div>
+        <button class="secondary" id="switchResetAll" type="button" style="display:none; width:100%; margin-top:8px;">Reset all switches</button>
         </div>
       </details>
     </div>
@@ -979,8 +1035,26 @@ export function createUi(
   });
   $('switchReset').addEventListener('click', () => cb.onSwitchReset());
 
+  // --- Switch count + active-switch chips + reset-all ---
+  $('switchCount').addEventListener('click', (e) => {
+    const t = (e.target as HTMLElement).closest('[data-count]') as HTMLElement | null;
+    if (t) cb.onSwitchCount(+t.dataset.count!);
+  });
+  $('switchChips').addEventListener('click', (e) => {
+    const t = (e.target as HTMLElement).closest('[data-sw]') as HTMLElement | null;
+    if (t) cb.onActiveSwitch(+t.dataset.sw!);
+  });
+  $('switchResetAll').addEventListener('click', () => cb.onSwitchResetAll());
+
   const keychain = $<HTMLInputElement>('keychain');
-  keychain.addEventListener('change', () => cb.onKeychain(keychain.checked));
+  keychain.addEventListener('change', () => cb.onKeychainToggle(keychain.checked));
+
+  $('keychainRotMinus').addEventListener('click', () => cb.onKeychainRotate(-15));
+  $('keychainRotPlus').addEventListener('click', () => cb.onKeychainRotate(15));
+  $('keychainOffsetMinus').addEventListener('click', () => cb.onKeychainOffset(-1.0));
+  $('keychainOffsetPlus').addEventListener('click', () => cb.onKeychainOffset(1.0));
+  $('keychainSizeMinus').addEventListener('click', () => cb.onKeychainSize(-0.4));
+  $('keychainSizePlus').addEventListener('click', () => cb.onKeychainSize(0.4));
 
   // --- Global edges (Shape & Size): cap-top + clicker-base fillet/chamfer ---
   const globalEdges = $('globalEdges');
@@ -1163,7 +1237,7 @@ export function createUi(
   // --- "What's new" update notification ---
   // Shown once after the welcome modal, before the tutorial. Its "Don't show
   // again" flag is independent of the tutorial / welcome dismissal keys.
-  const UPDATE_KEY = 'clicker_update_dismissed_2026_07';
+  const UPDATE_KEY = 'clicker_update_dismissed_2026_08';
 
   // Continue the on-load chain after welcome + update: open the tutorial unless
   // the user has permanently dismissed it.
@@ -1189,10 +1263,9 @@ export function createUi(
         <h2>Latest updates ✨</h2>
         <p>A few improvements landed since your last visit:</p>
         <ul class="whats-new-list">
-          <li>${check}<span><strong>Move &amp; rotate the switch</strong>: reposition and angle the MX switch from the new <em>Switch</em> section in the left menu.</span></li>
-          <li>${check}<span><strong>Fit tolerances</strong>: fine-tune how tightly the switch socket and switch stem fit (top &amp; bottom parts) under <em>More Settings</em>.</span></li>
-          <li>${check}<span><strong>Chamfer edges</strong>: bevel the raised elements while in Extrude mode.</span></li>
-          <li>${check}<span><strong>Separate text elements</strong>: color or extrude individual letters in your custom text.</span></li>
+          <li>${check}<span><strong>Sharper image tracing</strong>: high-quality resampling, perceptual color matching, and detail-preserving smoothing keep fine text and small features intact.</span></li>
+          <li>${check}<span><strong>Multiple switches</strong>: use 1–3 MX switches for bigger designs — each one moves and rotates on its own from the <em>Switch</em> section.</span></li>
+          <li>${check}<span><strong>Keychain loop</strong>: add a keyring loop, slide it around the body edge, adjust its tangent slide offset, or resize the ring hole.</span></li>
           <li>${check}<span><strong>Polish &amp; fixes</strong>: lots of smaller improvements across the app.</span></li>
         </ul>
         <div class="whats-new-foot">
@@ -1678,17 +1751,56 @@ export function createUi(
     if (socketValEl) socketValEl.textContent = fmtSigned(state.tolerance - BASE_SOCKET_TOL, 2);
     const stemValEl = document.getElementById('stemTolVal');
     if (stemValEl) stemValEl.textContent = fmtSigned(state.stemTolerance, 1);
+    const switchCountN = state.switches.length;
+    const activeIdx = Math.min(state.activeSwitchIndex, switchCountN - 1);
+    const active = state.switches[activeIdx] ?? { x: 0, y: 0, rotation: 0 };
     const swReadout = document.getElementById('switchReadout');
     if (swReadout) {
-      const { switchOffsetX: sx, switchOffsetY: sy, switchRotation: sr } = state;
       const bits: string[] = [];
-      if (Math.abs(sx) >= 0.05 || Math.abs(sy) >= 0.05) {
-        bits.push(`X ${sx > 0 ? '+' : ''}${sx.toFixed(1)} · Y ${sy > 0 ? '+' : ''}${sy.toFixed(1)} mm`);
+      if (Math.abs(active.x) >= 0.05 || Math.abs(active.y) >= 0.05) {
+        bits.push(`X ${active.x > 0 ? '+' : ''}${active.x.toFixed(1)} · Y ${active.y > 0 ? '+' : ''}${active.y.toFixed(1)} mm`);
       }
-      if (Math.abs(sr) >= 0.5) bits.push(`${sr > 0 ? '↺' : '↻'} ${Math.abs(sr)}°`);
-      swReadout.textContent = bits.length ? bits.join('  ·  ') : 'Centered';
+      if (Math.abs(active.rotation) >= 0.5) bits.push(`${active.rotation > 0 ? '↺' : '↻'} ${Math.abs(active.rotation)}°`);
+      const body = bits.length ? bits.join('  ·  ') : 'Centered';
+      swReadout.textContent = switchCountN > 1 ? `S${activeIdx + 1} · ${body}` : body;
     }
-    keychain.checked = state.keychain;
+    // Switch count segmented control.
+    const switchCountEl = document.getElementById('switchCount');
+    if (switchCountEl) {
+      for (const b of switchCountEl.querySelectorAll<HTMLElement>('[data-count]')) {
+        b.classList.toggle('active', +b.dataset.count! === switchCountN);
+      }
+    }
+    // Active-switch chips (only shown for 2–3 switches).
+    const chipsEl = document.getElementById('switchChips');
+    if (chipsEl) {
+      if (switchCountN > 1) {
+        chipsEl.style.display = 'flex';
+        if (chipsEl.querySelectorAll('[data-sw]').length !== switchCountN) {
+          chipsEl.innerHTML = state.switches
+            .map((_, i) => `<button class="tab" data-sw="${i}" type="button">S${i + 1}</button>`)
+            .join('');
+        }
+        for (const b of chipsEl.querySelectorAll<HTMLElement>('[data-sw]')) {
+          b.classList.toggle('active', +b.dataset.sw! === activeIdx);
+        }
+      } else {
+        chipsEl.style.display = 'none';
+      }
+    }
+    const resetAllEl = document.getElementById('switchResetAll');
+    if (resetAllEl) resetAllEl.style.display = switchCountN > 1 ? 'block' : 'none';
+    const kc = state.keychain;
+    keychain.checked = kc.enabled;
+    const kcOpts = document.getElementById('keychainOpts');
+    if (kcOpts) kcOpts.style.display = kc.enabled ? '' : 'none';
+
+    const kcAngleEl = document.getElementById('keychainAngleVal');
+    if (kcAngleEl) kcAngleEl.textContent = `${Math.round((((kc.angleDeg % 360) + 360) % 360))}°`;
+    const kcOffsetEl = document.getElementById('keychainOffsetVal');
+    if (kcOffsetEl) kcOffsetEl.textContent = `${(kc.offsetMm ?? 0.0).toFixed(1)} mm`;
+    const kcSizeEl = document.getElementById('keychainSizeVal');
+    if (kcSizeEl) kcSizeEl.textContent = `${kc.holeDiameterMm.toFixed(1)} mm`;
     $<HTMLInputElement>('removebg').checked = state.removeBg;
     $<HTMLInputElement>('removebgSvg').checked = state.removeBg;
     $<HTMLInputElement>('showswitch').checked = state.showSwitch;

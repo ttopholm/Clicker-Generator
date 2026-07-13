@@ -17,7 +17,8 @@
 // small details stay crisp) and removed from the backing — clean even when flat.
 //
 // Frame: Z = 0 is the switch plate top. socket cuts downward; stem rises to +Z.
-import type { BuildParams, BuildRegion, ClickerPart, EdgeSetting, EdgeStyle, PartGroup, Ring, RGB } from '../types';
+import type { BuildParams, BuildRegion, ClickerPart, EdgeSetting, EdgeStyle, PartGroup, Ring, RGB, SwitchPlacement } from '../types';
+import { getMarkSeed, markVoids, hardcodedVoids } from './identityMark';
 
 type Wasm = any;
 type Solid = any;
@@ -30,7 +31,7 @@ export function buildClicker(
   regions: BuildRegion[],
   outline: Ring[],
   params: BuildParams,
-): { parts: ClickerPart[]; switchOffset: [number, number] } {
+): { parts: ClickerPart[]; switchPlacements: SwitchPlacement[]; warnings: string[] } {
   const { Manifold, CrossSection } = wasm;
   const trash: { delete(): void }[] = [];
   const track = <T extends { delete(): void }>(o: T): T => {
@@ -320,22 +321,64 @@ export function buildClicker(
 
   const imageArea = shrink(plate, border, plate); // flat frame around the image
 
-  // --- Switch placement: the user can nudge the switch off the design centre so it
-  //     sits under solid material (a centred switch under a hollow part of the design
-  //     forces the well and skirt to bulge out and "box in" the stem). Clamp so the
-  //     switch clear column never leaves the cap footprint's bounding box — the plate
-  //     is always at least `minCap` wide, so a valid range exists on both axes.
+  // --- Switch placement: 1..3 switches, each nudged/rotated off the design centre so
+  //     it sits under solid material (a centred switch under a hollow part of the
+  //     design forces the well and skirt to bulge out). Clamp every switch's clear
+  //     column inside the cap footprint bbox — the plate is always ≥ `minCap`, so a
+  //     valid range exists on both axes — then enforce a minimum centre-to-centre
+  //     pitch so multiple sockets never overlap. The applied array is reported back so
+  //     the preview switch meshes match the geometry.
   const plateBB = plate.bounds();
   const halfCol = switchClear / 2;
+  const loX = plateBB.min[0] + halfCol;
+  const hiX = plateBB.max[0] - halfCol;
+  const loY = plateBB.min[1] + halfCol;
+  const hiY = plateBB.max[1] - halfCol;
   const clampAxis = (v: number, lo: number, hi: number) =>
     lo > hi ? (lo + hi) / 2 : Math.min(hi, Math.max(lo, v));
-  const swX = clampAxis(params.switchOffsetX ?? 0, plateBB.min[0] + halfCol, plateBB.max[0] - halfCol);
-  const swY = clampAxis(params.switchOffsetY ?? 0, plateBB.min[1] + halfCol, plateBB.max[1] - halfCol);
+  const clampX = (v: number) => clampAxis(v, loX, hiX);
+  const clampY = (v: number) => clampAxis(v, loY, hiY);
+
+  const requested = (params.switches?.length ? params.switches : [{ x: 0, y: 0, rotation: 0 }]).slice(0, 3);
+  const applied: SwitchPlacement[] = requested.map((sw) => ({
+    x: clampX(sw.x ?? 0),
+    y: clampY(sw.y ?? 0),
+    rotation: sw.rotation ?? 0,
+  }));
+  // Enforce a minimum centre-to-centre pitch (≈16 mm for MX): push the later switch
+  // of any too-close pair away along the axis of largest separation, then re-clamp.
+  // Two passes settle a 3-switch row; it's a heuristic, not a physics solver.
+  const SWITCH_PITCH_MIN = socketDim + 2.0;
+  let pinched = false;
+  for (let pass = 0; pass < 2; pass++) {
+    for (let i = 0; i < applied.length; i++) {
+      for (let j = i + 1; j < applied.length; j++) {
+        const a = applied[i];
+        const b = applied[j];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        if (Math.hypot(dx, dy) < SWITCH_PITCH_MIN) {
+          pinched = true;
+          if (Math.abs(dx) >= Math.abs(dy)) {
+            b.x = clampX(a.x + (dx < 0 ? -1 : 1) * SWITCH_PITCH_MIN);
+          } else {
+            b.y = clampY(a.y + (dy < 0 ? -1 : 1) * SWITCH_PITCH_MIN);
+          }
+        }
+      }
+    }
+  }
+  const warnings: string[] = [];
+  if (pinched && requested.length > 1) {
+    warnings.push('Switches were pulled together to fit the cap — increase Size for more room.');
+  }
+
   // Stem fit: scale the keycap-mount stem in XY so its cross socket opens up (positive
   // = looser, easier to press onto the switch) or closes (negative = tighter grip).
   // The offset is applied to the stem's footprint, so e.g. +0.2 grows it 0.2 mm across.
   // Z is left at scale 1 so the cap rest height, travel and skirt alignment don't move
-  // (stemBB — used for the Z stack — stays valid because only XY changes).
+  // (stemBB — used for the Z stack — stays valid because only XY changes). Computed once
+  // and reused for every switch placement.
   let stemSized: Solid = stem;
   const stemTol = params.stemTolerance ?? 0;
   if (Math.abs(stemTol) > 0.001) {
@@ -350,27 +393,28 @@ export function buildClicker(
   // tracked copies rather than mutating or freeing them. Rotation spins the whole
   // switch assembly (socket + stem + its clear column) about the axis, so the socket
   // cut and the cap's stem stay mutually aligned at any angle.
-  const swRot = params.switchRotation ?? 0;
-  const hasSwOffset = Math.abs(swX) > 0.001 || Math.abs(swY) > 0.001;
-  const hasSwRot = Math.abs(swRot) > 0.001;
-  const placeSolid = (s: Solid): Solid => {
-    let r = hasSwRot ? track(s.rotate([0, 0, swRot])) : s;
-    return hasSwOffset ? track(r.translate([swX, swY, 0])) : r;
+  const placeSolidAt = (s: Solid, sw: SwitchPlacement): Solid => {
+    const r = Math.abs(sw.rotation) > 0.001 ? track(s.rotate([0, 0, sw.rotation])) : s;
+    return Math.abs(sw.x) > 0.001 || Math.abs(sw.y) > 0.001 ? track(r.translate([sw.x, sw.y, 0])) : r;
   };
-  const socketAt: Solid = placeSolid(socket);
-  const stemAt: Solid = placeSolid(stemSized);
+  const socketAts: Solid[] = applied.map((sw) => placeSolidAt(socket, sw));
+  const stemAts: Solid[] = applied.map((sw) => placeSolidAt(stemSized, sw));
 
-  // Well = cap footprint (slip-fit) UNIONED with a guaranteed clear column over the
-  // switch, so a concave outline or small cap can never wall off the socket. The body
+  // Well = cap footprint (slip-fit) UNIONED with a guaranteed clear column over EACH
+  // switch, so a concave outline or small cap can never wall off a socket. The body
   // border then wraps whatever shape the well becomes — it bulges out only where a
-  // notch would otherwise block the switch.
-  // Clear column over the switch — rotate it with the switch so its clearance stays
-  // aligned even at an angle (keeps the socket cut inside the exposed area).
+  // notch would otherwise block a switch. Each column rotates with its switch so its
+  // clearance stays aligned even at an angle.
   const socketColumnBase = roundedRect(switchClear, switchClear, 2.5);
-  const socketColumn = track(
-    (hasSwRot ? track(socketColumnBase.rotate(swRot)) : socketColumnBase).translate([swX, swY]),
-  );
-  const wellFootprint = simp(track(grow(plate, tol).add(socketColumn))); // cap slips in with `tol`
+  let wellFp: Section = grow(plate, tol); // cap slips in with `tol`
+  for (const sw of applied) {
+    const col = track(
+      (Math.abs(sw.rotation) > 0.001 ? track(socketColumnBase.rotate(sw.rotation)) : socketColumnBase)
+        .translate([sw.x, sw.y]),
+    );
+    wellFp = track(wellFp.add(col));
+  }
+  const wellFootprint = simp(wellFp);
   const bodyFootprint = simp(grow(wellFootprint, Math.max(0.4, params.borderWidth)));
 
   // --- Z layout (shared assembly frame: Z = 0 is the switch-plate top) ---
@@ -534,7 +578,7 @@ export function buildClicker(
     const holePrism = extrudeAt(hole2D, slabTopZ - bottomZ + 0.02, bottomZ - 0.01);
     base = track(base.subtract(holePrism));
   }
-  base = track(base.add(stemAt));
+  for (const st of stemAts) base = track(base.add(st));
   if (skirtLen > 0.4) {
     // Root issue: any 2-D ring-minus-stemZone is algebraically identical to
     // punching a notch in the border. The only notch-free approach is to ensure
@@ -549,9 +593,12 @@ export function buildClicker(
     //
     // Z flush: where skirtBasePlate exceeds the original cap plate we add a thin
     // backing fill so the skirt top has something solid above it (no ledge/gap).
-    const stemGuard = 12 + 2 * skirtThickness; // inner edge lands exactly at ±6 mm around the stem
-    const stemGuardCs = track(track(CrossSection.square([stemGuard, stemGuard], true)).translate([swX, swY]));
-    const skirtBasePlate = track(plate.add(stemGuardCs));
+    const stemGuard = 12 + 2 * skirtThickness; // inner edge lands exactly at ±6 mm around each stem
+    let skirtBasePlate: Section = plate;
+    for (const sw of applied) {
+      const stemGuardCs = track(track(CrossSection.square([stemGuard, stemGuard], true)).translate([sw.x, sw.y]));
+      skirtBasePlate = track(skirtBasePlate.add(stemGuardCs));
+    }
     const skirtInner = track(skirtBasePlate.offset(-skirtThickness, 'Miter', 2.0));
     if (!sectionIsEmpty(skirtInner)) {
       const skirtRing = track(skirtBasePlate.subtract(skirtInner));
@@ -583,48 +630,118 @@ export function buildClicker(
   // subtraction does not cut a groove through the keychain loop/bridge.
   body = applyEdges(body, params.edgeSettings, bodyFootprint, bodyBottomZ, bodyTopZ, wellFloorZ);
 
-  // Optional keychain loop: a disc tab on the +Y edge with a ring hole through it.
-  if (params.keychainHole) {
-    const bb = bodyFootprint.bounds();
-    const loopR = 5.0;
-    const holeR = 2.6;
-    const cy = bb.max[1] + loopR * 0.35; // overlaps the body so it fuses
+  // Optional keychain attachment: a loop tab or an inside hole, placed anywhere around
+  // the body edge. Built and cut BEFORE the well/socket subtraction so a loop rotated
+  // near the well never leaves floating material.
+  const kc = params.keychain;
+  if (kc && kc.enabled) {
+    const holeR = Math.max(1.5, (kc.holeDiameterMm ?? 5.2) / 2);
     const th = Math.max(2.5, Math.min(4.0, (bodyTopZ - bodyBottomZ) * 0.35));
     const zb = bodyBottomZ;
+    const { p, dir } = edgePointAt(bodyFootprint, kc.angleDeg ?? 90);
 
-    // Create a circular loop and a short bridge into the +Y edge. Keep the bridge
-    // local to the loop: spanning it to the opposite body bound can leave an
-    // unwanted strip after the well is subtracted.
-    const loopCircle = track(CrossSection.circle(loopR, 64).translate([0, cy]));
-    const bodyDepth = Math.max(0, bb.max[1] - bb.min[1]);
-    const bridgeDepth = Math.min(bodyDepth, loopR * 1.1);
-    const bridgeBottomY = bb.max[1] - bridgeDepth;
-    const bridgeHeight = cy - bridgeBottomY;
-    const bridge = track(CrossSection.square([loopR * 2, bridgeHeight], true).translate([0, bridgeBottomY + bridgeHeight / 2]));
-    const loopFootprint = track(loopCircle.add(bridge));
+    // Apply offsetMm by shifting the base point p along the tangent vector (perpendicular to dir)
+    const tangent: [number, number] = [-dir[1], dir[0]];
+    const px = p[0] + tangent[0] * (kc.offsetMm ?? 0);
+    const py = p[1] + tangent[1] * (kc.offsetMm ?? 0);
 
-    let loop = extrudeAt(loopFootprint, th, zb);
-    // Give the loop the SAME edge treatment as the body ('clickerBase') so it reads as
-    // one piece — a chamfered body with a sharp loop looks like a bolt-on. Bevel the
-    // loop's top and bottom rims; the buried bridge edges are subsumed by the union.
+    // Apply the body's own edge ('clickerBase') bevel to a keychain add-on footprint
+    // so it reads as one piece with the body, not a bolt-on.
     const bodyEdge = params.edgeSettings?.find(
       (s) => (s.target === 'clickerBase' || s.target === 'baseTop') && s.style !== 'none' && s.radius >= 0.05,
     );
-    if (bodyEdge) {
-      const r = Math.min(bodyEdge.radius, th * 0.45, 2.5);
-      if (r >= 0.05) {
-        const topBlock = createEdgeBevelBlock(loopFootprint, r, bodyEdge.style, zb + th, false);
-        if (topBlock) loop = track(loop.subtract(topBlock));
-        const botBlock = createEdgeBevelBlock(loopFootprint, r, bodyEdge.style, zb, true);
-        if (botBlock) loop = track(loop.subtract(botBlock));
-      }
-    }
-    const hole = extrudeAt(track(CrossSection.circle(holeR, 48).translate([0, cy])), th + 2, zb - 1);
-    body = track(track(body.add(loop)).subtract(hole));
+    const bevelAddon = (solid: Solid, fp: Section, top: number, bottom: number): Solid => {
+      if (!bodyEdge) return solid;
+      const r = Math.min(bodyEdge.radius, (top - bottom) * 0.45, 2.5);
+      if (r < 0.05) return solid;
+      let out = solid;
+      const topBlock = createEdgeBevelBlock(fp, r, bodyEdge.style, top, false);
+      if (topBlock) out = track(out.subtract(topBlock));
+      const botBlock = createEdgeBevelBlock(fp, r, bodyEdge.style, bottom, true);
+      if (botBlock) out = track(out.subtract(botBlock));
+      return out;
+    };
+
+    // Loop style: a disc tab with a ring hole, built in a local frame (+Y outward)
+    // then rotated to the requested angle and moved onto the body edge point.
+    // The loop center is placed a full radius beyond the edge so the ENTIRE circle
+    // sits outside the body outline — no overhang wall. The bridge rectangle
+    // connects the loop back into the body, extending deep to avoid gaps on concave curves.
+    const loopR = Math.max(3.2, holeR + 1.8);
+    const outward = loopR; // full radius → circle just touches the body edge
+    const localLoop = track(CrossSection.circle(loopR, 64).translate([0, outward]));
+    // Bridge from the body edge into the back of the loop circle, going deep
+    const bridgeH = outward + loopR * 3.5;
+    const localBridge = track(CrossSection.square([loopR * 2, bridgeH], true).translate([0, outward - bridgeH / 2]));
+    let localFp: Section = track(localLoop.add(localBridge));
+    const rotDeg = (kc.angleDeg ?? 90) - 90;
+    if (Math.abs(rotDeg) > 0.001) localFp = track(localFp.rotate(rotDeg));
+    const loopFootprint = track(localFp.translate([px, py]));
+
+    let loop = extrudeAt(loopFootprint, th, zb);
+    loop = bevelAddon(loop, loopFootprint, zb + th, zb);
+    body = track(body.add(loop));
+
+    // Ring hole at the transformed loop centre (local [0, outward] → world).
+    const rr = (rotDeg * Math.PI) / 180;
+    const hcx = -outward * Math.sin(rr) + px;
+    const hcy = outward * Math.cos(rr) + py;
+    const hole = extrudeAt(track(CrossSection.circle(holeR, 48).translate([hcx, hcy])), th + 2, zb - 1);
+    body = track(body.subtract(hole));
   }
 
-  // Subtract the well and socket afterwards to ensure the interior cavity is clean
-  body = track(track(body.subtract(well)).subtract(socketAt));
+  // Subtract the well and every socket afterwards to ensure the interior cavity is clean
+  body = track(body.subtract(well));
+  for (const sk of socketAts) body = track(body.subtract(sk));
+
+  // Covert identity mark: subtract a seeded void constellation anchored to switch #0's
+  // socket, buried in the always-solid ring (invisible on prints, visible in a slicer
+  // section view). Only active when VITE_MARK_SEED is set (deployed build); dev builds
+  // skip this tier. Each void is subtracted only if fully buried, so it can never pierce
+  // a surface regardless of design/size/switch offset.
+  const markSeed = getMarkSeed();
+  if (markSeed && applied.length > 0) {
+    const sw0 = applied[0];
+    const rot0 = ((sw0.rotation ?? 0) * Math.PI) / 180;
+    for (const v of markVoids(markSeed)) {
+      const ang = (v.thetaDeg * Math.PI) / 180 + rot0;
+      const cx = sw0.x + v.r * Math.cos(ang);
+      const cy = sw0.y + v.r * Math.sin(ang);
+      const sphere = track(Manifold.sphere(v.d / 2, 16).translate([cx, cy, v.z]));
+      let buried = false;
+      try {
+        const inter = track(body.intersect(sphere));
+        buried = inter.volume() >= sphere.volume() * 0.98;
+      } catch {
+        buried = false;
+      }
+      if (buried) body = track(body.subtract(sphere));
+    }
+  }
+
+  // Hardcoded watermark — always active, no secret needed. A second tier of identity
+  // voids at a different radius/depth band (r 8–10, z -3.5...-1.5) so they never
+  // overlap with the secret constellation above. Even if someone copies the source
+  // and runs it without VITE_MARK_SEED, every model still carries these voids as
+  // proof that it was generated by this codebase.
+  if (applied.length > 0) {
+    const sw0 = applied[0];
+    const rot0 = ((sw0.rotation ?? 0) * Math.PI) / 180;
+    for (const v of hardcodedVoids()) {
+      const ang = (v.thetaDeg * Math.PI) / 180 + rot0;
+      const cx = sw0.x + v.r * Math.cos(ang);
+      const cy = sw0.y + v.r * Math.sin(ang);
+      const sphere = track(Manifold.sphere(v.d / 2, 16).translate([cx, cy, v.z]));
+      let buried = false;
+      try {
+        const inter = track(body.intersect(sphere));
+        buried = inter.volume() >= sphere.volume() * 0.98;
+      } catch {
+        buried = false;
+      }
+      if (buried) body = track(body.subtract(sphere));
+    }
+  }
 
   if (!body.isEmpty()) {
     parts.push(toPart(body, 'body', 'base', params.bodyColorRgb, 'base-body'));
@@ -658,7 +775,7 @@ export function buildClicker(
     }
   }
 
-  return { parts, switchOffset: [swX, swY] };
+  return { parts, switchPlacements: applied, warnings };
 
   /** Apply fillet/chamfer edge modifications to the body solid.
    *  Targets: 'clickerBase' is the merged global control that bevels the body's top
@@ -722,4 +839,68 @@ function sectionIsEmpty(cs: Section): boolean {
   } catch {
     return false;
   }
+}
+
+/** Parametric distance t ≥ 0 along ray O + t·D at which it crosses segment A→B
+ *  (u ∈ [0,1]), or null if it doesn't. */
+function raySegT(
+  ox: number, oy: number, dx: number, dy: number,
+  a: [number, number], b: [number, number],
+): number | null {
+  const ex = b[0] - a[0];
+  const ey = b[1] - a[1];
+  const det = -dx * ey + ex * dy;
+  if (Math.abs(det) < 1e-12) return null; // parallel
+  const r0x = a[0] - ox;
+  const r0y = a[1] - oy;
+  const t = (-r0x * ey + ex * r0y) / det;
+  const u = (dx * r0y - dy * r0x) / det;
+  if (t >= 0 && u >= -1e-9 && u <= 1 + 1e-9) return t;
+  return null;
+}
+
+/** Point where a ray from the footprint centroid at `angleDeg` (0 = +X, CCW) exits the
+ *  OUTERMOST boundary, plus the outward ray direction. Robust to holes/concavities. */
+function edgePointAt(footprint: Section, angleDeg: number): { p: [number, number]; dir: [number, number] } {
+  const rad = (angleDeg * Math.PI) / 180;
+  const dir: [number, number] = [Math.cos(rad), Math.sin(rad)];
+  let rings: [number, number][][] = [];
+  try {
+    rings = footprint.toPolygons() as [number, number][][];
+  } catch {
+    rings = [];
+  }
+  // Area-weighted centroid over all rings.
+  let area = 0, cx = 0, cy = 0;
+  for (const ring of rings) {
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const cross = ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+      area += cross;
+      cx += (ring[j][0] + ring[i][0]) * cross;
+      cy += (ring[j][1] + ring[i][1]) * cross;
+    }
+  }
+  let ox: number, oy: number;
+  if (Math.abs(area) > 1e-6) {
+    area *= 0.5;
+    ox = cx / (6 * area);
+    oy = cy / (6 * area);
+  } else {
+    const b = footprint.bounds();
+    ox = (b.min[0] + b.max[0]) / 2;
+    oy = (b.min[1] + b.max[1]) / 2;
+  }
+  // Largest crossing t = the outermost boundary point along the ray.
+  let bestT = -Infinity;
+  for (const ring of rings) {
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const t = raySegT(ox, oy, dir[0], dir[1], ring[j], ring[i]);
+      if (t !== null && t > bestT) bestT = t;
+    }
+  }
+  if (!isFinite(bestT) || bestT <= 0) {
+    const b = footprint.bounds();
+    bestT = Math.max((b.max[0] - b.min[0]) / 2, (b.max[1] - b.min[1]) / 2);
+  }
+  return { p: [ox + dir[0] * bestT, oy + dir[1] * bestT], dir };
 }

@@ -5,7 +5,7 @@ import { contours } from 'd3-contour';
 import type { QuantizeResult } from './quantize';
 import type { RegionSet, Ring, RGB } from '../types';
 
-export function traceRegions(q: QuantizeResult, smoothing = 0.5): RegionSet {
+export function traceRegions(q: QuantizeResult, smoothing = 0.5, preserveDetail = true): RegionSet {
   const { indices, width, height, palette } = q;
 
   // Foreground bbox (pixel space) for normalization.
@@ -38,8 +38,8 @@ export function traceRegions(q: QuantizeResult, smoothing = 0.5): RegionSet {
   ];
 
   const contourGen = contours().size([width, height]).thresholds([0.5]);
-  const minRingArea = 0.0004 * maxSide * maxSide; // drop noise specks (px²)
-  const resampleStep = Math.max(0.6, maxSide / 720); // uniform contour spacing (px) - higher resolution
+  const minRingArea = 0.0002 * maxSide * maxSide; // drop noise specks (px²) — lowered to preserve thin strokes
+  const resampleStep = Math.max(0.5, maxSide / 900); // uniform contour spacing (px) - higher resolution
   // Smoothing strength → Gaussian sigma in px. `smoothing` is 0..1 from the UI.
   const sigmaPx = 1.0 + Math.max(0, Math.min(1, smoothing)) * 14;
   const sigmaPts = Math.max(0.6, sigmaPx / resampleStep);
@@ -56,9 +56,16 @@ export function traceRegions(q: QuantizeResult, smoothing = 0.5): RegionSet {
       const compRings: Ring[] = [];
       for (const ring of poly) {
         const r = ring as [number, number][];
-        if (Math.abs(ringArea(r)) < minRingArea) continue;
+        const A = Math.abs(ringArea(r));
+        if (A < minRingArea) continue;
         const sampled = resampleClosed(r, resampleStep);
-        const smooth = gaussianSmoothClosed(sampled, sigmaPts);
+        // Adaptive smoothing: the large outer silhouette keeps full sigma, but small
+        // rings (letter counters, eyes) get up to ~4× less so their features survive
+        // the same kernel that only lightly touches the silhouette.
+        const featureScale = preserveDetail
+          ? Math.max(0.25, Math.min(1.0, Math.sqrt(A) / (0.15 * maxSide)))
+          : 1;
+        const smooth = gaussianSmoothClosed(sampled, sigmaPts * featureScale);
         const simplified = rdp(smooth, resampleStep * 0.25); // higher resolution simplification
         if (simplified.length >= 3) compRings.push(simplified.map(norm));
       }
@@ -71,10 +78,15 @@ export function traceRegions(q: QuantizeResult, smoothing = 0.5): RegionSet {
   //     foreground pixel assigned (no gaps) with shared edges between colors. ---
   const K = palette.length;
   const fields: Float64Array[] = [];
+  const blurRad = smoothing * 2.0; // scale with user's smoothing (default 0.1 -> 0.2, skips blur)
   for (let k = 0; k < K; k++) {
     const m = new Float64Array(width * height);
     for (let p = 0; p < indices.length; p++) if (indices[p] === k) m[p] = 1;
-    fields.push(boxBlur(m, width, height, 1.6));
+    if (blurRad >= 0.5) {
+      fields.push(boxBlur(m, width, height, blurRad));
+    } else {
+      fields.push(m);
+    }
   }
   const label = new Int16Array(width * height).fill(-1);
   for (let p = 0; p < indices.length; p++) {
@@ -91,6 +103,69 @@ export function traceRegions(q: QuantizeResult, smoothing = 0.5): RegionSet {
     label[p] = best;
   }
 
+  // Minimum-feature absorption: instead of tracing (and later dropping) tiny color
+  // specks — which leaves backing-color holes — reassign each below-threshold label
+  // component to the majority label of its neighbours, so the speck merges into its
+  // surround. Runs on the label map before contouring; the outline (all foreground)
+  // is untouched so the silhouette is unaffected.
+  if (preserveDetail) {
+    const comp = new Int32Array(width * height).fill(-1);
+    const sizes: number[] = [];
+    const stack: number[] = [];
+    for (let s = 0; s < label.length; s++) {
+      if (label[s] < 0 || comp[s] !== -1) continue;
+      const lab = label[s];
+      const id = sizes.length;
+      let size = 0;
+      comp[s] = id;
+      stack.push(s);
+      while (stack.length) {
+        const p = stack.pop()!;
+        size++;
+        const x = p % width;
+        const y = (p / width) | 0;
+        if (x > 0 && label[p - 1] === lab && comp[p - 1] === -1) { comp[p - 1] = id; stack.push(p - 1); }
+        if (x < width - 1 && label[p + 1] === lab && comp[p + 1] === -1) { comp[p + 1] = id; stack.push(p + 1); }
+        if (y > 0 && label[p - width] === lab && comp[p - width] === -1) { comp[p - width] = id; stack.push(p - width); }
+        if (y < height - 1 && label[p + width] === lab && comp[p + width] === -1) { comp[p + width] = id; stack.push(p + width); }
+      }
+      sizes.push(size);
+    }
+    // Tally the labels bordering each small component, then reassign it wholesale to
+    // the dominant neighbour (majority vote). Threshold = the ring-drop area, so any
+    // speck that WOULD be dropped is instead absorbed.
+    const votes = new Map<number, Map<number, number>>();
+    const addVote = (id: number, l: number) => {
+      let m = votes.get(id);
+      if (!m) { m = new Map(); votes.set(id, m); }
+      m.set(l, (m.get(l) ?? 0) + 1);
+    };
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const p = y * width + x;
+        const id = comp[p];
+        if (id < 0 || sizes[id] >= minRingArea) continue;
+        if (x > 0 && label[p - 1] >= 0 && comp[p - 1] !== id) addVote(id, label[p - 1]);
+        if (x < width - 1 && label[p + 1] >= 0 && comp[p + 1] !== id) addVote(id, label[p + 1]);
+        if (y > 0 && label[p - width] >= 0 && comp[p - width] !== id) addVote(id, label[p - width]);
+        if (y < height - 1 && label[p + width] >= 0 && comp[p + width] !== id) addVote(id, label[p + width]);
+      }
+    }
+    const winner = new Map<number, number>();
+    for (const [id, m] of votes) {
+      let bl = -1;
+      let bv = -1;
+      for (const [l, v] of m) if (v > bv) { bv = v; bl = l; }
+      if (bl >= 0) winner.set(id, bl);
+    }
+    if (winner.size > 0) {
+      for (let p = 0; p < label.length; p++) {
+        const id = comp[p];
+        if (id >= 0 && winner.has(id)) label[p] = winner.get(id)!;
+      }
+    }
+  }
+
   // Per-color regions, traced from the smooth tiling.
   const regions: RegionSet['regions'] = [];
   for (let k = 0; k < K; k++) {
@@ -102,10 +177,11 @@ export function traceRegions(q: QuantizeResult, smoothing = 0.5): RegionSet {
   }
 
   // Outline = all foreground. It's a single region (no adjacency gaps), so blur
-  // it for an extra-smooth cap edge.
+  // it for an extra-smooth cap edge when smoothing is requested.
   const fgMask = new Float64Array(width * height);
   for (let p = 0; p < indices.length; p++) fgMask[p] = indices[p] >= 0 ? 1 : 0;
-  const outline = componentsFromMask(boxBlur(fgMask, width, height, 1.6)).flat();
+  const outlineMask = blurRad >= 0.5 ? boxBlur(fgMask, width, height, blurRad) : fgMask;
+  const outline = componentsFromMask(outlineMask).flat();
 
   return { regions, outline, aspect: bw / bh };
 }

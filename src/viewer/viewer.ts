@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { toCreasedNormals } from 'three/addons/utils/BufferGeometryUtils.js';
-import type { ClickerPart, MeshData, RGB, ViewMode } from '../types';
+import type { ClickerPart, MeshData, RGB, SwitchPlacement, ViewMode } from '../types';
 
 export type SectionAxis = 'x' | 'y' | 'z';
 
@@ -12,8 +12,8 @@ export interface Viewer {
   setSection(axis: SectionAxis, pos: number): void;
   setSwitch(mesh: MeshData | null): void;
   showSwitch(on: boolean): void;
-  /** Move + rotate the preview switch to the (clamped) offset the geometry was built with. */
-  setSwitchOffset(x: number, y: number, rotationDeg?: number): void;
+  /** Place one preview switch mesh per (clamped) placement the geometry was built with. */
+  setSwitchPlacements(placements: SwitchPlacement[]): void;
   renderToPng(): Promise<Blob | null>;
   setTheme(theme: string): void;
   /** Register a callback fired when the user clicks a colored part of the model, or null if clicking empty space. */
@@ -143,6 +143,9 @@ export function createViewer(container: HTMLElement): Viewer {
   let viewMode: ViewMode = 'assembled';
   let explodeOffset = 0;
   let switchMaterial: THREE.MeshStandardMaterial | null = null;
+  // The switch mesh (shared across placements) and where to seat copies of it.
+  let switchGeometry: THREE.BufferGeometry | null = null;
+  let switchPlacements: SwitchPlacement[] = [{ x: 0, y: 0, rotation: 0 }];
 
   // ---- Part picking / hover / selection ----
   const raycaster = new THREE.Raycaster();
@@ -265,34 +268,55 @@ export function createViewer(container: HTMLElement): Viewer {
     applyView();
   }
 
+  // Remove the switch meshes from the group WITHOUT disposing the geometry/material —
+  // every placement shares one BufferGeometry + material, freed once in setSwitch/dispose.
+  function clearSwitchMeshes() {
+    for (const child of [...switchGroup.children]) switchGroup.remove(child);
+  }
+
+  // Seat one mesh per placement, all sharing the (dense) switch geometry + material.
+  function rebuildSwitchMeshes() {
+    clearSwitchMeshes();
+    if (!switchGeometry || !switchMaterial) return;
+    for (const p of switchPlacements) {
+      const m = new THREE.Mesh(switchGeometry, switchMaterial);
+      m.position.set(p.x, p.y, 0);
+      m.rotation.z = (p.rotation * Math.PI) / 180; // match the geometry's socket/stem rotation
+      switchGroup.add(m);
+    }
+    applyView(); // pick up section clipping if it's active
+  }
+
   // The real MX switch, already placed in the assembly frame (display only). Smooth
   // shading and no crease-splitting — the mesh is dense (~hundreds of k tris).
   function setSwitch(mesh: MeshData | null) {
-    clearGroup(switchGroup);
+    clearSwitchMeshes();
+    switchGeometry?.dispose();
+    switchGeometry = null;
+    switchMaterial?.dispose();
     switchMaterial = null;
     if (!mesh) return;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(mesh.vertProperties, 3)); // numProp = 3
     geo.setIndex(new THREE.BufferAttribute(mesh.triVerts, 1));
     geo.computeVertexNormals();
+    switchGeometry = geo;
     switchMaterial = new THREE.MeshStandardMaterial({
       color: new THREE.Color(0x2a2a30),
       metalness: 0.1,
       roughness: 0.6,
       side: THREE.DoubleSide,
     });
-    switchGroup.add(new THREE.Mesh(geo, switchMaterial));
-    applyView(); // pick up section clipping if it's active
+    rebuildSwitchMeshes();
   }
 
   function showSwitch(on: boolean) {
     switchGroup.visible = on;
   }
 
-  function setSwitchOffset(x: number, y: number, rotationDeg = 0) {
-    switchGroup.position.set(x, y, 0);
-    // Rotate about the switch axis (Z) to match the geometry's socket/stem rotation.
-    switchGroup.rotation.z = (rotationDeg * Math.PI) / 180;
+  function setSwitchPlacements(placements: SwitchPlacement[]) {
+    switchPlacements = placements.length ? placements : [{ x: 0, y: 0, rotation: 0 }];
+    rebuildSwitchMeshes();
   }
 
   function setSection(axis: SectionAxis, pos: number) {
@@ -475,7 +499,9 @@ export function createViewer(container: HTMLElement): Viewer {
     renderer.domElement.removeEventListener('pointerup', onPointerUp);
     clearGroup(capGroup);
     clearGroup(bodyGroup);
-    clearGroup(switchGroup);
+    clearSwitchMeshes();
+    switchGeometry?.dispose();
+    switchMaterial?.dispose();
     controls.dispose();
     pmrem.dispose();
     renderer.dispose();
@@ -493,7 +519,7 @@ export function createViewer(container: HTMLElement): Viewer {
     setSection,
     setSwitch,
     showSwitch,
-    setSwitchOffset,
+    setSwitchPlacements,
     renderToPng,
     setTheme,
     onPartPick,

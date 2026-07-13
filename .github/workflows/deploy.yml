@@ -25,6 +25,10 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
+        env:
+          # Covert model-identity seed (repo secret) + commit SHA for provenance.
+          VITE_MARK_SEED: ${{ secrets.VITE_MARK_SEED }}
+          VITE_BUILD_ID: ${{ github.sha }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

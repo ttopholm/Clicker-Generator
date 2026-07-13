@@ -7,3 +7,6 @@ dist/
 
 # local backups / archives (e.g. project zip snapshots)
 *.zip
+
+# local planning docs (AI agent manuals, not for the public repo)
+New featrures dev plan.md
