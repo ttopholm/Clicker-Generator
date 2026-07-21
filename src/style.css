@@ -1,5 +1,6 @@
 :root[data-theme="light"] {
   color-scheme: light;
+  --font-display: 'Chakra Petch', system-ui, -apple-system, sans-serif;
   --bg: #f3f4f6;
   --panel: #ffffff;
   --panel-2: #edf0f5;
@@ -13,6 +14,7 @@
 
 :root[data-theme="dark"], :root:not([data-theme="light"]) {
   color-scheme: dark;
+  --font-display: 'Chakra Petch', system-ui, -apple-system, sans-serif;
   --bg: #15171c;
   --panel: #1d2027;
   --panel-2: #252932;
@@ -90,7 +92,7 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
 #layout {
   display: grid;
-  grid-template-columns: 20vw 1fr 20vw;
+  grid-template-columns: 22vw 1fr 24.2vw;
   grid-template-rows: minmax(0, 1fr);
   flex: 1 1 auto;
   width: 100vw;
@@ -108,7 +110,14 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
   flex-direction: column;
   height: 100%;
   overflow-y: auto;
+  /* Thin scrollbars — same look as the keychain generator. */
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
 }
+.sidebar::-webkit-scrollbar { width: 10px; }
+.sidebar::-webkit-scrollbar-thumb { background: var(--line); border-radius: 6px; border: 3px solid var(--panel); }
+.sidebar::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+.sidebar::-webkit-scrollbar-track { background: transparent; }
 .sidebar.left { border-right: 1px solid var(--line); }
 .sidebar.right { border-left: 1px solid var(--line); }
 
@@ -121,7 +130,7 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
   gap: 5px;
   margin-bottom: 4px;
 }
-h1 { font-size: 19px; margin: 0; letter-spacing: 0.2px; font-weight: 600; }
+h1 { font-family: var(--font-display); font-size: 19px; margin: 0; letter-spacing: 0.2px; font-weight: 600; }
 .app-subtitle { color: var(--muted); font-size: 15px; margin: 2px 0 0; font-weight: 400; line-height: 1.35; }
 .app-credit { color: var(--muted); font-size: 14px; margin: 2px 0 0; }
 .app-credit-link {
@@ -238,6 +247,7 @@ details.section-collapsible > summary {
   margin-bottom: 0;
   padding: 22px 0;
   color: var(--text);
+  font-family: var(--font-display);
   font-size: 18px;
   font-weight: 700;
   text-transform: none;
@@ -255,7 +265,7 @@ details.section-collapsible[open] > summary::before { transform: rotate(90deg); 
 details.section-collapsible > summary:hover { color: var(--accent); }
 details.section-collapsible[open] > summary { padding-bottom: 14px; }
 .collapsible-body { padding-bottom: 22px; }
-.label { display: block; font-size: 14px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin-bottom: 14px; }
+.label { display: block; font-family: var(--font-display); font-size: 14px; text-transform: uppercase; letter-spacing: 0.6px; color: var(--muted); margin-bottom: 14px; font-weight: 600; }
 
 /* Grid alignments for controls — stacked layout */
 .prow-stacked {
@@ -325,23 +335,38 @@ button {
 }
 button:hover { border-color: var(--accent); }
 button.primary {
-  width: 100%; padding: 14px; border: none; border-radius: 11px; cursor: pointer;
-  background: var(--accent); color: var(--accent-text); font-weight: 600; font-size: 17.5px;
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  width: 100%; padding: 11px 16px; border: none; border-radius: 6px; cursor: pointer;
+  background: var(--accent); color: var(--accent-text); font-weight: 600; font-size: 15px;
+  transition: filter 0.12s;
 }
 button.primary:hover { filter: brightness(1.07); }
 button.primary:disabled { opacity: 0.45; cursor: not-allowed; filter: none; }
 
 button.secondary {
-  width: 100%; padding: 12px; border-radius: 11px; cursor: pointer;
+  width: 100%; padding: 9px 10px; border-radius: 6px; cursor: pointer;
   background: transparent; color: var(--text); border: 1px solid var(--line);
-  font: inherit; font-weight: 600; font-size: 16px;
+  font: inherit; font-weight: 500; font-size: 14px;
   transition: border-color .12s, color .12s;
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
 }
 button.secondary:hover { border-color: var(--accent); color: var(--accent); }
-button.secondary:disabled { opacity: .5; cursor: default; }
+button.secondary:disabled { opacity: 0.45; cursor: not-allowed; }
 
-.btn-row { display: flex; gap: 10px; }
-.btn-row button { flex: 1; }
+.btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.btn-row button { width: 100%; }
+.footer-utility-row { margin-top: 0; }
+.utility-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 9px 10px;
+  font-size: 14px;
+  font-weight: 500;
+  border-radius: 6px;
+}
+.utility-btn svg, button.secondary svg { flex: 0 0 auto; width: 16px; height: 16px; }
 
 /* Segmented controls (tabs) */
 .tabs {
@@ -1609,6 +1634,15 @@ button.fil-chip:active {
   padding: 16px 20px 20px;
   border-top: 1px solid var(--line);
   z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+#projectSettingsContainer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 /* Custom Font Grid */
