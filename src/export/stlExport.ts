@@ -56,7 +56,7 @@ export function buildStlZip(parts: ClickerPart[]): Uint8Array {
   const { minZ, placements } = arrangeForPrint(parts);
   const place = (g: PartGroup, x: number, y: number, z: number) => placeVertex(placements[g], x, y, z);
   const files: Record<string, Uint8Array> = {};
-  for (const g of ['top', 'base'] as PartGroup[]) {
+  for (const g of ['top', 'base', 'foot'] as PartGroup[]) {
     const groupParts = parts.filter((p) => p.group === g);
     if (!groupParts.length) continue;
     files[`clicker-${g}.stl`] = encodeBinaryStl(trianglesOf(groupParts, minZ, place), `clicker ${g}`);
@@ -69,6 +69,9 @@ export function buildStlZip(parts: ClickerPart[]): Uint8Array {
     'Clicker Generator STL export\n\n' +
       'clicker-base.stl  the body, resting on its bottom\n' +
       'clicker-top.stl   the cap(s), flipped so the image face lies on the plate\n' +
+      (parts.some((p) => p.group === 'foot')
+        ? 'clicker-foot.stl  the soda-can foot, glue face down; glue it under the body\n'
+        : '') +
       'parts/            every coloured part on its own, in the same placement, for\n' +
       '                  manual filament assignment (STL has no colour)\n\n' +
       'All files share one coordinate system, so they line up when imported together.\n',

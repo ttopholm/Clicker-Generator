@@ -4,6 +4,7 @@ import Module from 'manifold-3d';
 import wasmUrl from 'manifold-3d/manifold.wasm?url';
 import { parse3MF } from '../geometry/threemfImport';
 import { buildClicker } from '../geometry/buildClicker';
+import { CAN } from '../geometry/buildCan';
 import type { GeometryRequest, GeometryResponse } from '../types';
 
 type Wasm = Awaited<ReturnType<typeof Module>>;
@@ -11,6 +12,9 @@ type Wasm = Awaited<ReturnType<typeof Module>>;
 let modulePromise: Promise<Wasm> | null = null;
 let socket: any = null; // cached MX socket (negative), in mm
 let stem: any = null; // cached MX stem (positive), in mm
+let canBody: any = null; // cached soda-can body (optional shape), in mm
+let canLid: any = null; // its lid (with its own stem), XY-centred, Z as authored
+let canFoot: any = null; // its glue-on bottom, XY-centred, Z as authored
 
 async function getModule(): Promise<Wasm> {
   if (!modulePromise) {
@@ -53,6 +57,12 @@ self.onmessage = async (e: MessageEvent<GeometryRequest>) => {
     if (msg.type === 'init') {
       socket?.delete?.();
       stem?.delete?.();
+      canBody?.delete?.();
+      canBody = null;
+      canLid?.delete?.();
+      canLid = null;
+      canFoot?.delete?.();
+      canFoot = null;
       const a = assetToSolid(wasm, msg.socket);
       const b = assetToSolid(wasm, msg.stem);
       // The socket and stem are authored in independent local frames (separate
@@ -74,6 +84,36 @@ self.onmessage = async (e: MessageEvent<GeometryRequest>) => {
       stem = b.solid.translate([-tcx, -tcy, 0]);
       a.solid.delete();
       b.solid.delete();
+
+      // Optional soda-can body: centre it on its switch pocket and drop its top face
+      // (the plate the switch flange rests on) to Z = 0.
+      if (msg.canBody) {
+        try {
+          const c = assetToSolid(wasm, msg.canBody);
+          const cbb = c.solid.boundingBox();
+          canBody = c.solid.translate([-(cbb.min[0] + cbb.max[0]) / 2, -(cbb.min[1] + cbb.max[1]) / 2, -CAN.plateZInAsset]);
+          c.solid.delete();
+        } catch (err) {
+          console.warn('[assets] can body failed to load:', err);
+          canBody = null;
+        }
+      }
+      // Lid and foot: centre in XY, keep their authored Z (buildCan places them).
+      const centred = (buf: ArrayBuffer | undefined, label: string): any => {
+        if (!buf) return null;
+        try {
+          const c = assetToSolid(wasm, buf);
+          const bb = c.solid.boundingBox();
+          const out = c.solid.translate([-(bb.min[0] + bb.max[0]) / 2, -(bb.min[1] + bb.max[1]) / 2, 0]);
+          c.solid.delete();
+          return out;
+        } catch (err) {
+          console.warn(`[assets] ${label} failed to load:`, err);
+          return null;
+        }
+      };
+      canLid = centred(msg.canLid, 'can lid');
+      canFoot = centred(msg.canFoot, 'can foot');
 
       // The switch is DISPLAY-ONLY (a preview toggle) — no CSG. Parse it raw and place
       // it in the assembly frame:
@@ -125,6 +165,7 @@ self.onmessage = async (e: MessageEvent<GeometryRequest>) => {
         msg.regions,
         msg.outline,
         msg.params,
+        { canBody, canLid, canFoot },
       );
       const transfer: Transferable[] = [];
       for (const p of parts) transfer.push(p.vertProperties.buffer, p.triVerts.buffer);

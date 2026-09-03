@@ -153,11 +153,22 @@ export function arrangeForPrint(parts: ClickerPart[]): PrintArrangement {
   const topCenterY = isFinite(topBB.minY) ? (topBB.minY + topBB.maxY) / 2 : 0;
   const ty = 2 * topCenterY;
 
+  // Foot (soda can bottom): flipped face-down as well, to the LEFT of the base.
+  const footBB = groupBBox(parts, 'foot', minZ);
+  const footWidth = isFinite(footBB.maxX) ? footBB.maxX - footBB.minX : 0;
+  const footCenterX = isFinite(footBB.minX) ? (footBB.minX + footBB.maxX) / 2 : 0;
+  const footCenterY = isFinite(footBB.minY) ? (footBB.minY + footBB.maxY) / 2 : 0;
+  const ftx = baseCenterX - baseWidth / 2 - GAP_MM - footWidth / 2 - footCenterX;
+  const ftz = isFinite(footBB.maxZ) ? footBB.maxZ : 0;
+
   return {
     minZ,
     placements: {
-      base: { flip: false, tx: 0, ty: 0, tz: 0 },
+      // The base rests on the plate by itself (the foot, if any, hangs below it in
+      // the assembly frame, so the global drop alone would leave the base floating).
+      base: { flip: false, tx: 0, ty: 0, tz: isFinite(baseBB.minZ) ? -baseBB.minZ : 0 },
       top: { flip: true, tx, ty, tz },
+      foot: { flip: true, tx: ftx, ty: 2 * footCenterY, tz: ftz },
     },
   };
 }
@@ -172,6 +183,7 @@ export function buildThreeMF(parts: ClickerPart[]): Uint8Array {
   const groups: { id: PartGroup; label: string }[] = [
     { id: 'top', label: 'clicker_top' },
     { id: 'base', label: 'clicker_base' },
+    { id: 'foot', label: 'clicker_foot' },
   ].filter((g) => parts.some((p) => p.group === g.id)) as { id: PartGroup; label: string }[];
 
   const baseMaterials = parts
@@ -196,8 +208,11 @@ export function buildThreeMF(parts: ClickerPart[]): Uint8Array {
     .map((g, gi) => {
       const pl = placements[g.id];
       if (!pl.flip) {
-        // Base stays at origin — identity transform (no attribute needed).
-        return `<item objectid="${firstWrapperId + gi}"/>`;
+        // Base stays at origin — identity transform (no attribute needed) unless it
+        // has to be lowered onto the plate.
+        if (!pl.tx && !pl.ty && !pl.tz) return `<item objectid="${firstWrapperId + gi}"/>`;
+        const xform = transformAttr(1, 0, 0, 0, 1, 0, 0, 0, 1, pl.tx, pl.ty, pl.tz);
+        return `<item objectid="${firstWrapperId + gi}"${xform}/>`;
       }
       // 180° rotation around X:  [1, 0, 0 / 0, -1, 0 / 0, 0, -1], then translate.
       const xform = transformAttr(1, 0, 0, 0, -1, 0, 0, 0, -1, pl.tx, pl.ty, pl.tz);
