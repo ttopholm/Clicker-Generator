@@ -118,6 +118,16 @@ docker compose --profile dev up dev
 
 and open **http://localhost:5173**.
 
+## Host it on Netlify (password protected)
+
+The repo carries a `netlify.toml` and an edge function that puts HTTP Basic Auth in front of the whole site, so a private copy can live on Netlify's free plan without being public.
+
+1. In Netlify choose **Add new site → Import an existing project** and pick this repository and branch. The build command, publish folder and Node version come from `netlify.toml`.
+2. Under **Site configuration → Environment variables** add `BASIC_AUTH_USER` and `BASIC_AUTH_PASSWORD`. Until both exist the site answers 503 instead of opening up.
+3. Deploy. The browser asks for the username and password once per session.
+
+Optional: add `VITE_MARK_SEED` there too to bake the covert identity mark into exported models, as the GitHub Pages workflow does.
+
 ## Deploy
 
 Pushing to `main` triggers [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml), which builds the static site and publishes `dist/` to GitHub Pages.

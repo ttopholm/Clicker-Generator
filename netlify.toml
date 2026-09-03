@@ -1,0 +1,24 @@
+# Netlify configuration for hosting the Clicker Generator (static Vite build).
+#
+# Connect the repository in Netlify and it picks these settings up automatically.
+# The whole site sits behind HTTP Basic Auth (netlify/edge-functions/basic-auth.ts);
+# set BASIC_AUTH_USER and BASIC_AUTH_PASSWORD under Site configuration →
+# Environment variables, otherwise the site answers 503 instead of going public.
+#
+# Optional build-time variables (same names as the GitHub Pages workflow):
+#   VITE_MARK_SEED   covert model-identity seed; unset = no secret mark
+
+[build]
+  # COMMIT_REF is provided by Netlify; it ends up in the exported 3MF metadata.
+  command = "VITE_BUILD_ID=$COMMIT_REF npm run build"
+  publish = "dist"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# Vite hashes every file under /assets/ (JS, CSS, the Manifold .wasm), so they can
+# be cached for a long time. Netlify already serves .wasm as application/wasm.
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
