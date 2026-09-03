@@ -100,7 +100,31 @@ function transformAttr(
   return ` transform="${[m00, m01, m02, m10, m11, m12, m20, m21, m22, tx, ty, tz].map(f).join(' ')}"`;
 }
 
-export function buildThreeMF(parts: ClickerPart[]): Uint8Array {
+/** How a group is placed on the build plate: optionally flipped 180° about X (the
+ *  cap's image face down), then translated. Applied to Z-shifted coordinates. */
+export interface GroupPlacement {
+  flip: boolean;
+  tx: number;
+  ty: number;
+  tz: number;
+}
+
+export interface PrintArrangement {
+  /** Subtract from every Z so the lowest point of the assembly sits on the plate. */
+  minZ: number;
+  placements: Record<PartGroup, GroupPlacement>;
+}
+
+/** Apply a placement to a (Z-shifted) vertex. A 180° rotation keeps triangle winding. */
+export function placeVertex(pl: GroupPlacement, x: number, y: number, z: number): [number, number, number] {
+  return pl.flip ? [x + pl.tx, -y + pl.ty, -z + pl.tz] : [x + pl.tx, y + pl.ty, z + pl.tz];
+}
+
+/**
+ * The print layout shared by every export: base at the origin, the top flipped
+ * face-down and set beside it with a small gap, everything resting on Z = 0.
+ */
+export function arrangeForPrint(parts: ClickerPart[]): PrintArrangement {
   // Drop the whole assembly onto the build plate (min Z -> 0), keeping relative
   // positions.
   let minZ = Infinity;
@@ -110,6 +134,36 @@ export function buildThreeMF(parts: ClickerPart[]): Uint8Array {
     }
   }
   if (!isFinite(minZ)) minZ = 0;
+
+  const GAP_MM = 5; // spacing between base and top on the build plate
+  const baseBB = groupBBox(parts, 'base', minZ);
+  const topBB = groupBBox(parts, 'top', minZ);
+
+  // Top group: flip 180° around X so the image face is down on the build plate,
+  // then translate next to the base.
+  // After the flip the Z range inverts (old maxZ -> 0), so lift by +maxZ to rest on Z=0.
+  const tz = isFinite(topBB.maxZ) ? topBB.maxZ : 0;
+  // Shift in X so the top sits to the right of the base with a gap.
+  const baseWidth = isFinite(baseBB.maxX) ? baseBB.maxX - baseBB.minX : 0;
+  const topWidth = isFinite(topBB.maxX) ? topBB.maxX - topBB.minX : 0;
+  const baseCenterX = isFinite(baseBB.minX) ? (baseBB.minX + baseBB.maxX) / 2 : 0;
+  const topCenterX = isFinite(topBB.minX) ? (topBB.minX + topBB.maxX) / 2 : 0;
+  const tx = baseCenterX + baseWidth / 2 + GAP_MM + topWidth / 2 - topCenterX;
+  // Keep Y centred (the flip inverts Y, so compensate).
+  const topCenterY = isFinite(topBB.minY) ? (topBB.minY + topBB.maxY) / 2 : 0;
+  const ty = 2 * topCenterY;
+
+  return {
+    minZ,
+    placements: {
+      base: { flip: false, tx: 0, ty: 0, tz: 0 },
+      top: { flip: true, tx, ty, tz },
+    },
+  };
+}
+
+export function buildThreeMF(parts: ClickerPart[]): Uint8Array {
+  const { minZ, placements } = arrangeForPrint(parts);
 
   const extruders = assignExtruders(parts);
 
@@ -138,38 +192,15 @@ export function buildThreeMF(parts: ClickerPart[]): Uint8Array {
     .join('');
 
   // --- Arrange parts for print: side by side, top part flipped face-down ---
-  const GAP_MM = 5; // spacing between base and top on the build plate
-
-  // Compute per-group bounding boxes (in the already-shifted coordinate space)
-  const baseBB = groupBBox(parts, 'base', minZ);
-  const topBB = groupBBox(parts, 'top', minZ);
-
   const buildItems = groups
     .map((g, gi) => {
-      if (g.id === 'base') {
-        // Base stays at origin — identity transform (no attribute needed, but we
-        // keep it explicit for clarity)
+      const pl = placements[g.id];
+      if (!pl.flip) {
+        // Base stays at origin — identity transform (no attribute needed).
         return `<item objectid="${firstWrapperId + gi}"/>`;
       }
-      // Top group: flip 180° around X so the image face is down on the build plate,
-      // then translate next to the base.
-      //
-      // 180° rotation around X:  [1, 0, 0 / 0, -1, 0 / 0, 0, -1]
-      // After flip, Z range inverts: old maxZ -> 0, old minZ -> (maxZ - minZ).
-      // We need to shift Z up by +maxZ so the flipped part sits on Z=0.
-      const tz = topBB.maxZ; // lifts flipped part back onto Z=0
-      // Shift in X so the top sits next to the base with a gap.
-      // Base occupies [baseBB.minX .. baseBB.maxX]. Place top to the right.
-      const baseWidth = isFinite(baseBB.maxX) ? baseBB.maxX - baseBB.minX : 0;
-      const topWidth = isFinite(topBB.maxX) ? topBB.maxX - topBB.minX : 0;
-      // Center both around X=0 area: base center, top center offset to the right
-      const baseCenterX = isFinite(baseBB.minX) ? (baseBB.minX + baseBB.maxX) / 2 : 0;
-      const topCenterX = isFinite(topBB.minX) ? (topBB.minX + topBB.maxX) / 2 : 0;
-      const tx = baseCenterX + baseWidth / 2 + GAP_MM + topWidth / 2 - topCenterX;
-      // Keep Y centered (flip inverts Y, so we compensate)
-      const topCenterY = isFinite(topBB.minY) ? (topBB.minY + topBB.maxY) / 2 : 0;
-      const ty = 2 * topCenterY; // compensate for Y inversion around origin
-      const xform = transformAttr(1, 0, 0, 0, -1, 0, 0, 0, -1, tx, ty, tz);
+      // 180° rotation around X:  [1, 0, 0 / 0, -1, 0 / 0, 0, -1], then translate.
+      const xform = transformAttr(1, 0, 0, 0, -1, 0, 0, 0, -1, pl.tx, pl.ty, pl.tz);
       return `<item objectid="${firstWrapperId + gi}"${xform}/>`;
     })
     .join('');
