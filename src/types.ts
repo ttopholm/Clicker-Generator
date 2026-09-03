@@ -54,6 +54,9 @@ export type BaseDepthKind = 'standard' | 'deep';
 export const DEEP_BASE_EXTRA_MM = 5.17;
 export type ViewMode = 'assembled' | 'exploded' | 'section';
 
+/** Where the design comes from (the right-hand Import Source tabs). */
+export type ImportMode = 'image' | 'svg' | 'icon' | 'text' | 'blocks';
+
 /** Which interaction mode the viewport is in. */
 export type EditMode = 'color' | 'extrude' | 'edges';
 
@@ -120,6 +123,24 @@ export const DEFAULT_PREPROCESS: PreprocessParams = {
   shadows: 1,
 };
 
+/** Blocks mode: one keycap-style block per character on a shared base. */
+export type BlocksLayout = 'horizontal' | 'vertical';
+
+/** One block of a Blocks design, laid out by the main thread. */
+export interface BuildCell {
+  /** Cell centre, mm from the design origin. */
+  x: number;
+  y: number;
+  /** Glyph inlays with rings in mm relative to the cell centre (Y up). Empty = blank block. */
+  regions: BuildRegion[];
+}
+
+export interface BlocksParams {
+  /** Cap (keycap) side length, mm. Clamped up to the minimum cap that clears a switch. */
+  size: number;
+  cells: BuildCell[];
+}
+
 /** Parameters the geometry worker needs to build the clicker (all mm).
  *  Design: the BODY is a solid block with a recessed well + raised border cut
  *  into the top; the cap nests INSIDE that well (button-in-bezel). */
@@ -127,6 +148,9 @@ export interface BuildParams {
   baseShape: BaseShapeKind;
   /** Regular body, or a deeper one with an accessory pocket under the switch. */
   baseDepth: BaseDepthKind;
+  /** Blocks mode. When set, `regions`/`outline`/`switches` are ignored and one square
+   *  cap with its own switch is built per cell on a shared straight-edged body. */
+  blocks?: BlocksParams;
   capWidthMm: number; // the cap (top) footprint; body = cap + tolerance + border
   topThickness: number; // solid base-color backing behind the image (min 1–2 mm)
   imageDepth: number; // how deep the colored image cuts in from the top
