@@ -24,7 +24,7 @@ import type {
   SwitchPlacement,
   BuildCell,
 } from './types';
-import { FILAMENTS } from './types';
+import { FILAMENTS, PRINT_PLATES } from './types';
 
 // Start fetching switch assets immediately at startup to run in parallel with worker setup
 const base = import.meta.env.BASE_URL;
@@ -52,8 +52,13 @@ function defaultSwitchLayout(n: number, capWidthMm: number): SwitchPlacement[] {
 }
 
 // ---- State (UI-facing) ----
+// localStorage key for the chosen print plate (read during store creation below).
+const PLATE_KEY = 'clicker_plate';
+
 const store = createStore<UiState>({
   status: 'Loading switch assets…',
+  plateId: readSavedPlate(),
+  plateFit: null,
   material: null,
   building: false,
   hasParts: false,
@@ -310,6 +315,15 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
       store.set({ status: 'Could not copy, see console.' });
       console.log(AI_PROMPT);
     }
+  },
+  onPlate: (id) => {
+    store.set({ plateId: id });
+    try {
+      localStorage.setItem(PLATE_KEY, id);
+    } catch {
+      /* ignore */
+    }
+    applyPlate();
   },
   onSaveProject: () => saveProject(),
   onLoadProject: (file) => loadProject(file),
@@ -743,6 +757,8 @@ const worker = new Worker(new URL('./workers/geometry.worker.ts', import.meta.ur
   type: 'module',
 });
 
+applyPlate();
+
 worker.onmessage = (e: MessageEvent<GeometryResponse>) => {
   const msg = e.data;
   switch (msg.type) {
@@ -777,6 +793,7 @@ worker.onmessage = (e: MessageEvent<GeometryResponse>) => {
       break;
     case 'parts': {
       latestParts = msg.parts;
+      updatePlateFit();
       store.set({ material: estimateMaterial(msg.parts) });
       viewer.setParts(msg.parts, !pendingHistoryReset);
       viewer.setView(store.get().view);
@@ -1101,6 +1118,68 @@ function rgbToHex(rgb: RGB): string {
     rgb.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')
   );
 }
+// ---- Print plate preview + fit check ------------------------------------------
+/** Same gap the exports leave between the base and the flipped top. */
+const PLATE_LAYOUT_GAP_MM = 5;
+
+function readSavedPlate(): string {
+  try {
+    const v = localStorage.getItem(PLATE_KEY);
+    if (v === '') return '';
+    if (v && PRINT_PLATES.some((p) => p.id === v)) return v;
+  } catch {
+    /* ignore */
+  }
+  return 'a1';
+}
+
+function currentPlate() {
+  return PRINT_PLATES.find((p) => p.id === store.get().plateId) ?? null;
+}
+
+/** The exported print layout: base and top side by side, so both must fit at once. */
+function printLayoutSize(parts: ClickerPart[]): { w: number; d: number } | null {
+  const bb = (group: 'top' | 'base') => {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of parts) {
+      if (p.group !== group) continue;
+      const v = p.vertProperties;
+      for (let i = 0; i < v.length; i += p.numProp) {
+        if (v[i] < minX) minX = v[i];
+        if (v[i] > maxX) maxX = v[i];
+        if (v[i + 1] < minY) minY = v[i + 1];
+        if (v[i + 1] > maxY) maxY = v[i + 1];
+      }
+    }
+    return isFinite(minX) ? { w: maxX - minX, d: maxY - minY } : null;
+  };
+  const base = bb('base');
+  const top = bb('top');
+  if (!base && !top) return null;
+  const w = (base?.w ?? 0) + (top?.w ?? 0) + (base && top ? PLATE_LAYOUT_GAP_MM : 0);
+  const d = Math.max(base?.d ?? 0, top?.d ?? 0);
+  return { w, d };
+}
+
+function updatePlateFit() {
+  const plate = currentPlate();
+  const need = latestParts.length ? printLayoutSize(latestParts) : null;
+  if (!plate || !need) {
+    store.set({ plateFit: null });
+    return;
+  }
+  // Either orientation on the plate counts as fitting.
+  const fits =
+    (need.w <= plate.w && need.d <= plate.d) || (need.d <= plate.w && need.w <= plate.d);
+  store.set({ plateFit: { needW: need.w, needD: need.d, plate, fits } });
+}
+
+function applyPlate() {
+  const plate = currentPlate();
+  viewer.setPlate(plate ? { w: plate.w, d: plate.d } : null);
+  updatePlateFit();
+}
+
 // ---- Material estimate ----------------------------------------------------
 // Manifold gives exact solid volumes; a print uses less because the slicer hollows the
 // inside with sparse infill. Approximate the printed mass as a shell (perimeters + top /

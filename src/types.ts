@@ -54,6 +54,30 @@ export type BaseDepthKind = 'standard' | 'deep';
 export const DEEP_BASE_EXTRA_MM = 5.17;
 export type ViewMode = 'assembled' | 'exploded' | 'section';
 
+/** Build plates the preview can outline under the model (usable area, mm). */
+export interface PrintPlate {
+  id: string;
+  name: string;
+  w: number;
+  d: number;
+}
+export const PRINT_PLATES: PrintPlate[] = [
+  { id: 'a1mini', name: 'Bambu A1 mini · 180 × 180 mm', w: 180, d: 180 },
+  { id: 'a1', name: 'Bambu A1 / P1 / X1 · 256 × 256 mm', w: 256, d: 256 },
+  { id: 'h2d', name: 'Bambu H2D · 350 × 320 mm', w: 350, d: 320 },
+  { id: 'mk4', name: 'Prusa MK4 / MK3 · 250 × 210 mm', w: 250, d: 210 },
+  { id: 'prusamini', name: 'Prusa MINI · 180 × 180 mm', w: 180, d: 180 },
+  { id: 'ender3', name: 'Creality Ender-3 · 220 × 220 mm', w: 220, d: 220 },
+];
+
+/** Whether the exported print layout (base and top side by side) fits the chosen plate. */
+export interface PlateFit {
+  needW: number;
+  needD: number;
+  plate: PrintPlate;
+  fits: boolean;
+}
+
 /** Where the design comes from (the right-hand Import Source tabs). */
 export type ImportMode = 'image' | 'svg' | 'icon' | 'text' | 'blocks';
 
