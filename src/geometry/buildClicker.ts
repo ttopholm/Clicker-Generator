@@ -18,6 +18,7 @@
 //
 // Frame: Z = 0 is the switch plate top. socket cuts downward; stem rises to +Z.
 import type { BuildParams, BuildRegion, ClickerPart, EdgeSetting, EdgeStyle, PartGroup, Ring, RGB, SwitchPlacement } from '../types';
+import { DEEP_BASE_EXTRA_MM } from '../types';
 import { getMarkSeed, markVoids, hardcodedVoids } from './identityMark';
 
 type Wasm = any;
@@ -429,7 +430,13 @@ export function buildClicker(
   // The body border top sits `capProud` below the cap top, so pressing the cap down
   // by `travel` brings its top flush with the border (rest = a proud pressable button;
   // full press = flush). capProud ≈ travel.
-  const bodyBottomZ = socketBB.min[2] - params.floorThickness;
+  // Deep base: the body grows DOWN by `extraDepth` under the socket, and the socket
+  // cavity is carried straight down to the new floor (see `pocketAts` below) so an
+  // accessory — the LED clicker assembly that slides onto the switch pins — can sit
+  // beneath the switch's bottom housing. Everything above the plate (cap, well,
+  // border, travel, fit) is untouched.
+  const extraDepth = params.baseDepth === 'deep' ? DEEP_BASE_EXTRA_MM : 0;
+  const bodyBottomZ = socketBB.min[2] - extraDepth - params.floorThickness;
   const maxProud = Math.max(0.4, slabTopZ - cavityFloorZ - 1.0); // leave ≥1 mm of border
   const capProud = Math.max(0.4, Math.min(params.capProud, maxProud));
   const bodyTopZ = slabTopZ - capProud;
@@ -618,6 +625,25 @@ export function buildClicker(
   }
   parts.unshift(toPart(base, 'cap', 'top', params.baseFilamentRgb, 'top-base'));
 
+  // Deep-base pocket: the socket's own footprint (its widest section, at the cavity
+  // floor) extruded down by `extraDepth`. It overlaps 0.5 mm up into the socket cut so
+  // the two subtractions meet volumetrically (no coplanar seam), and is placed per
+  // switch exactly like the socket so it follows every offset and rotation.
+  let pocketAts: Solid[] = [];
+  if (extraDepth > 0.01) {
+    let socketFootprint: Section | null = null;
+    try {
+      socketFootprint = track(socket.slice(socketBB.min[2] + 0.3));
+    } catch {
+      socketFootprint = null;
+    }
+    if (!socketFootprint || sectionIsEmpty(socketFootprint)) {
+      socketFootprint = track(socket.project());
+    }
+    const pocket = extrudeAt(socketFootprint, extraDepth + 0.5, socketBB.min[2] - extraDepth);
+    pocketAts = applied.map((sw) => placeSolidAt(pocket, sw));
+  }
+
   // --- Body: solid block − well − socket. The well is the cup the cap presses into;
   //     the border ring around it frames the proud cap (and the cap's skirt hides the
   //     gap). The socket is cut into the well floor (= plate plane) to grip the switch. ---
@@ -693,6 +719,7 @@ export function buildClicker(
   // Subtract the well and every socket afterwards to ensure the interior cavity is clean
   body = track(body.subtract(well));
   for (const sk of socketAts) body = track(body.subtract(sk));
+  for (const pk of pocketAts) body = track(body.subtract(pk));
 
   // Covert identity mark: subtract a seeded void constellation anchored to switch #0's
   // socket, buried in the always-solid ring (invisible on prints, visible in a slicer

@@ -42,6 +42,16 @@ export interface PaletteEntry {
 }
 
 export type BaseShapeKind = 'outline' | 'circle' | 'square' | 'hexagon' | 'heart' | 'star' | 'egg';
+
+/** Body depth below the switch plate. 'standard' is the regular base; 'deep' adds
+ *  DEEP_BASE_EXTRA_MM under the switch socket and carries the socket cavity straight
+ *  down to the new floor, so an LED / electronics module can sit beneath the switch. */
+export type BaseDepthKind = 'standard' | 'deep';
+
+/** Extra body depth (mm) of the 'deep' base, added below the switch socket. Matches the
+ *  reference "forhøjet 5.17 mm" base: it clears the 13.3 × 13.4 × 5.3 mm LED clicker
+ *  assembly that slides onto the switch pins under the bottom housing. */
+export const DEEP_BASE_EXTRA_MM = 5.17;
 export type ViewMode = 'assembled' | 'exploded' | 'section';
 
 /** Which interaction mode the viewport is in. */
@@ -115,6 +125,8 @@ export const DEFAULT_PREPROCESS: PreprocessParams = {
  *  into the top; the cap nests INSIDE that well (button-in-bezel). */
 export interface BuildParams {
   baseShape: BaseShapeKind;
+  /** Regular body, or a deeper one with an accessory pocket under the switch. */
+  baseDepth: BaseDepthKind;
   capWidthMm: number; // the cap (top) footprint; body = cap + tolerance + border
   topThickness: number; // solid base-color backing behind the image (min 1–2 mm)
   imageDepth: number; // how deep the colored image cuts in from the top
