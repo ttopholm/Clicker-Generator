@@ -116,6 +116,8 @@ export interface UiCallbacks {
   onShowSwitch(on: boolean): void;
   onSection(axis: SectionAxis, pos: number): void;
   onExport(): void;
+  /** ZIP of binary STL files (top, base and every coloured part). */
+  onExportStl(): void;
   onRenderPng(): void;
   onAiPrompt(): void;
   onSaveProject(): void;
@@ -643,6 +645,10 @@ export function createUi(
 
     <div class="sidebar-sticky-footer">
       <button class="primary" id="export" style="width:100%;">Download 3MF</button>
+      <button class="secondary utility-btn export-stl" id="exportStl" type="button" title="ZIP with binary STL files: the base, the top (flipped for printing) and every coloured part on its own. STL has no colours, so use the 3MF when your slicer supports it.">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>Download STL (zip)</span>
+      </button>
       <div id="projectSettingsContainer">
         <div class="btn-row">
           <button id="saveProj" class="secondary utility-btn" type="button" aria-label="Save project">
@@ -1413,6 +1419,7 @@ export function createUi(
 
   // --- Export and Utility actions ---
   $('export').addEventListener('click', () => cb.onExport());
+  $('exportStl').addEventListener('click', () => cb.onExportStl());
   // render PNG and AI prompt buttons removed per design
   $('saveProj').addEventListener('click', () => cb.onSaveProject());
   $('newProj').addEventListener('click', () => {
@@ -2169,6 +2176,7 @@ export function createUi(
 
     const exportBtn = $<HTMLButtonElement>('export');
     exportBtn.disabled = !state.hasParts || state.building;
+    $<HTMLButtonElement>('exportStl').disabled = exportBtn.disabled;
 
     // Toggle loading overlay
     const overlay = $('loadingOverlay');

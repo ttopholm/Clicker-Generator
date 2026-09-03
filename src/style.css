@@ -2166,3 +2166,5 @@ button.fil-chip:active {
   text-align: center;
   line-height: 1.2;
 }
+/* Secondary STL download under the 3MF button */
+.export-stl { width: 100%; margin-top: 8px; }
