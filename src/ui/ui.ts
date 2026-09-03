@@ -61,6 +61,8 @@ export interface UiState {
   blocksText: string;
   blockSymbols: BlockSymbol[];
   blocksLayout: BlocksLayout;
+  /** Wrap after this many blocks per row/column; 0 = all on one line. */
+  blocksPerRow: number;
   /** Glyph box as a fraction of the block's usable area (1 = 100 %). */
   blocksLetterScale: number;
   /** Block (keycap) side length, mm. */
@@ -163,6 +165,7 @@ export interface UiCallbacks {
   /** Replace the whole ordered list of symbol blocks (insert / change / remove). */
   onBlockSymbols(symbols: BlockSymbol[]): void;
   onBlocksLayout(layout: BlocksLayout): void;
+  onBlocksPerRow(n: number): void;
   onBlocksLetterScale(scale: number): void;
   onBlocksSize(mm: number): void;
   onBlocksGap(mm: number): void;
@@ -323,6 +326,18 @@ export function createUi(
           <button class="tab active" data-layout="horizontal" type="button">Horizontal</button>
           <button class="tab" data-layout="vertical" type="button">Vertical</button>
         </div>
+      </div>
+      <div class="field">
+        <label for="blocksPerRow">Blocks per line ${tip('Wrap the word onto several rows (or columns when Vertical) after this many blocks. A space at the start of a new line is dropped, so "HELLO WORLD" wraps as HELLO / WORLD. Handy when one long row would not fit the plate.')}</label>
+        <select id="blocksPerRow">
+          <option value="0">All on one line</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+          <option value="6">6</option>
+          <option value="8">8</option>
+        </select>
       </div>
       <div class="prow-stacked">
         <div class="prow-header">
@@ -1210,6 +1225,8 @@ export function createUi(
     const t = (e.target as HTMLElement).closest('[data-layout]') as HTMLElement | null;
     if (t) cb.onBlocksLayout(t.dataset.layout as BlocksLayout);
   });
+  const blocksPerRow = $<HTMLSelectElement>('blocksPerRow');
+  blocksPerRow.addEventListener('change', () => cb.onBlocksPerRow(+blocksPerRow.value));
   const blocksLetterScale = $<HTMLInputElement>('blocksLetterScale');
   blocksLetterScale.addEventListener('input', () => cb.onBlocksLetterScale(+blocksLetterScale.value / 100));
   const blocksSize = $<HTMLInputElement>('blocksSize');
@@ -2263,6 +2280,16 @@ export function createUi(
     $('sectionSwitch').hidden = isBlocks;
     for (const b of blocksLayoutTabs.querySelectorAll<HTMLElement>('[data-layout]')) {
       b.classList.toggle('active', b.dataset.layout === state.blocksLayout);
+    }
+    if (+blocksPerRow.value !== state.blocksPerRow) {
+      // Keep unusual saved values selectable.
+      if (![...blocksPerRow.options].some((o) => +o.value === state.blocksPerRow)) {
+        const o = document.createElement('option');
+        o.value = String(state.blocksPerRow);
+        o.textContent = String(state.blocksPerRow);
+        blocksPerRow.appendChild(o);
+      }
+      blocksPerRow.value = String(state.blocksPerRow);
     }
     blocksLetterScale.value = String(Math.round(state.blocksLetterScale * 100));
     setVal('blocksLetterScaleVal', Math.round(state.blocksLetterScale * 100) + '%');

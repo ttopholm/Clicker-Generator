@@ -84,6 +84,7 @@ const store = createStore<UiState>({
   blocksText: 'Name',
   blockSymbols: [],
   blocksLayout: 'horizontal',
+  blocksPerRow: 0,
   blocksLetterScale: 1,
   blocksSize: 22,
   blocksGap: BLOCKS_WALL_MM,
@@ -416,6 +417,11 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
     store.set({ blocksLayout: layout });
     debouncedRebuild();
   },
+  onBlocksPerRow: (n) => {
+    // Wrapping only moves blocks, so a rebuild (no re-trace) is enough.
+    store.set({ blocksPerRow: Math.max(0, Math.round(n)) });
+    debouncedRebuild();
+  },
   onBlocksLetterScale: (v) => {
     store.set({ blocksLetterScale: Math.max(0.3, Math.min(1.5, v)) });
     debouncedReprocess();
@@ -530,8 +536,8 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
 const HISTORY_FIELDS = [
   'palette', 'paletteOverrides', 'partOverrides', 'bodyColorRgb', 'baseColorOverride',
   'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'baseDepth', 'blocksLayout',
-  'blocksGap', 'capWidthMm', 'topThickness', 'imageDepth', 'tolerance', 'stemTolerance',
-  'switches', 'keychain', 'magnets', 'deepExtraMm',
+  'blocksPerRow', 'capWidthMm', 'topThickness', 'imageDepth', 'tolerance', 'stemTolerance',
+  'switches', 'keychain', 'blocksGap', 'magnets', 'deepExtraMm',
 ] as const;
 let history: string[] = [];
 let histIndex = -1;
@@ -1100,7 +1106,7 @@ function rebuild(quiet = false) {
   if (isBlocks) {
     // Position the traced cells for the current layout/tolerance and resolve each
     // block's letter colour (a clicked-on override wins over the palette filament).
-    const cells = placeBlocks(blockCells, s.blocksLayout, blocksPitch(s.blocksSize, s.tolerance, s.blocksGap));
+    const cells = placeBlocks(blockCells, s.blocksLayout, blocksPitch(s.blocksSize, s.tolerance, s.blocksGap), s.blocksPerRow);
     params.blocks = {
       size: s.blocksSize,
       cells: cells.map((c) => ({
@@ -1402,6 +1408,7 @@ function buildProject(): ProjectFile {
       blocksText: s.blocksText,
       blockSymbols: s.blockSymbols,
       blocksLayout: s.blocksLayout,
+      blocksPerRow: s.blocksPerRow,
       blocksLetterScale: s.blocksLetterScale,
       blocksSize: s.blocksSize,
       blocksGap: s.blocksGap,
@@ -1546,6 +1553,7 @@ async function loadProject(file: File) {
           )
         : [],
       blocksLayout: set.blocksLayout === 'vertical' ? 'vertical' : 'horizontal',
+      blocksPerRow: typeof set.blocksPerRow === 'number' ? Math.max(0, Math.round(set.blocksPerRow)) : 0,
       blocksLetterScale: typeof set.blocksLetterScale === 'number' ? set.blocksLetterScale : 1,
       blocksSize: typeof set.blocksSize === 'number' ? set.blocksSize : 22,
       blocksGap: typeof set.blocksGap === 'number' ? set.blocksGap : BLOCKS_WALL_MM,
