@@ -68,6 +68,7 @@ export const PRINT_PLATES: PrintPlate[] = [
   { id: 'mk4', name: 'Prusa MK4 / MK3 · 250 × 210 mm', w: 250, d: 210 },
   { id: 'prusamini', name: 'Prusa MINI · 180 × 180 mm', w: 180, d: 180 },
   { id: 'ender3', name: 'Creality Ender-3 · 220 × 220 mm', w: 220, d: 220 },
+  { id: 'kobras1', name: 'Anycubic Kobra S1 · 250 × 250 mm', w: 250, d: 250 },
 ];
 
 /** Whether the exported print layout (base and top side by side) fits the chosen plate. */
