@@ -24,8 +24,7 @@ import type {
   SwitchPlacement,
   BuildCell,
 } from './types';
-import { DEEP_BASE_EXTRA_MM, FILAMENTS } from './types';
-import { FILAMENTS, PRINT_PLATES } from './types';
+import { DEEP_BASE_EXTRA_MM, FILAMENTS, PRINT_PLATES } from './types';
 
 // Start fetching switch assets immediately at startup to run in parallel with worker setup
 const base = import.meta.env.BASE_URL;
