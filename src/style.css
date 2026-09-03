@@ -2156,5 +2156,15 @@ button.fil-chip:active {
   margin-top: 4px;
 }
 
+/* Autosave note next to the "New design" button */
+.autosave-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  line-height: 1.2;
+}
 /* Secondary STL download under the 3MF button */
 .export-stl { width: 100%; margin-top: 8px; }

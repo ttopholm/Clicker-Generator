@@ -122,6 +122,8 @@ export interface UiCallbacks {
   onAiPrompt(): void;
   onSaveProject(): void;
   onLoadProject(file: File): void;
+  /** Forget the autosaved design and start over. */
+  onNewDesign(): void;
   onBodyColor(hex: string): void;
 
   // New callbacks for vector modes
@@ -659,6 +661,13 @@ export function createUi(
           </button>
           <input type="file" id="projFile" accept="application/json" hidden />
         </div>
+        <div class="btn-row">
+          <button id="newProj" class="secondary utility-btn" type="button" aria-label="Start a new design" title="Your design is saved in this browser automatically. This clears it and starts over.">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+            <span>New design</span>
+          </button>
+          <span class="autosave-note">Autosaved in this browser</span>
+        </div>
         <div class="btn-row footer-utility-row">
           <button id="helpToggle" class="secondary utility-btn" type="button" aria-label="Show intro and help">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
@@ -907,6 +916,7 @@ export function createUi(
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'font-grid-btn';
+    btn.dataset.fontId = font.id;
     btn.textContent = font.name;
     btn.style.fontFamily = `"${font.id.replace('bundled-', '')}", "${font.name}", sans-serif`;
     
@@ -921,6 +931,17 @@ export function createUi(
 
   FONT_OPTIONS.forEach(addFontOption);
   loadBundledFonts(addFontOption);
+
+  /** Reflect a restored/loaded text design in the Text panel (field + active font). */
+  function setTextSource(text: string, fontId: string) {
+    letterText.value = text;
+    const btn = fontGrid.querySelector<HTMLElement>(`[data-font-id="${CSS.escape(fontId)}"]`);
+    if (btn && btn !== selectedFontBtn) {
+      selectedFontBtn?.classList.remove('active');
+      btn.classList.add('active');
+      selectedFontBtn = btn;
+    }
+  }
 
   // --- Generate buttons ---
   $('generateSvg').addEventListener('click', () => cb.onGenerate());
@@ -1401,6 +1422,9 @@ export function createUi(
   $('exportStl').addEventListener('click', () => cb.onExportStl());
   // render PNG and AI prompt buttons removed per design
   $('saveProj').addEventListener('click', () => cb.onSaveProject());
+  $('newProj').addEventListener('click', () => {
+    if (confirm('Start a new design? The design saved in this browser will be cleared.')) cb.onNewDesign();
+  });
   const projFile = $<HTMLInputElement>('projFile');
   $('loadProj').addEventListener('click', () => projFile.click());
   projFile.addEventListener('change', () => {
@@ -2351,6 +2375,7 @@ export function createUi(
     hexRgb, 
     showColorPopoverAt, 
     addUploadedSvg, 
+    setTextSource,
     addFontOption: (font: FontOption) => { 
       addFontOption(font); 
       // Click the newly added font to select it
