@@ -4,6 +4,7 @@
 import { FONT_OPTIONS } from './letter';
 import { LUCIDE_ICONS, buildSvg } from './lucideIcons';
 import { parseSvg } from './logo';
+import { processImage } from './pipeline';
 import type { BlocksLayout, BuildCell, RegionSet, RGB, Ring } from '../types';
 
 /** Longest word Blocks mode lays out (each block adds a switch and ~25 mm of base). */
@@ -17,16 +18,136 @@ export const BLOCKS_MARGIN_MM = 1.5;
 export const blocksPitch = (sizeMm: number, toleranceMm: number): number =>
   sizeMm + 2 * toleranceMm + BLOCKS_WALL_MM;
 
-/** A symbol block inserted before letter `index` (0 = first, text.length = last). */
-export interface BlockSymbol {
-  index: number;
-  icon: string;
+/** What a symbol block shows: a Lucide icon by name, or an emoji character. */
+export type SymbolSpec = { icon: string; emoji?: undefined } | { emoji: string; icon?: undefined };
+
+/** A symbol block inserted before letter `index` (0 = first, text.length = at the end).
+ *  Several symbols may share a slot; they keep their array order. */
+export type BlockSymbol = { index: number } & SymbolSpec;
+
+/** Colours an emoji is quantized to (each becomes a filament slot in the palette). */
+export const EMOJI_COLORS = 4;
+
+/** Emoji are drawn with the device's own emoji font (Apple / Segoe / Noto Color Emoji),
+ *  so they look like the ones the user picks. Different systems draw them differently. */
+const EMOJI_FONT = '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", "Twemoji Mozilla", "EmojiOne Color", sans-serif';
+
+const emojiCache = new Map<string, RegionSet | null>();
+
+/** True when the string is (mostly) an emoji / pictograph rather than plain text. */
+export function looksLikeEmoji(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  try {
+    return /\p{Extended_Pictographic}/u.test(t);
+  } catch {
+    return /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(t);
+  }
+}
+
+/**
+ * Rasterize an emoji with the system emoji font and run it through the image pipeline
+ * (matte → quantize → trace), giving a multi-colour RegionSet normalized to a unit box.
+ * Returns null when nothing was drawn (no emoji font, or an unsupported character).
+ */
+export function traceEmoji(emoji: string, px = 320): RegionSet | null {
+  const key = emoji.trim();
+  if (emojiCache.has(key)) return emojiCache.get(key)!;
+  let result: RegionSet | null = null;
+  try {
+    if (typeof document !== 'undefined') {
+      const canvas = document.createElement('canvas');
+      canvas.width = px;
+      canvas.height = px;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      if (ctx) {
+        ctx.clearRect(0, 0, px, px);
+        ctx.font = `${Math.round(px * 0.66)}px ${EMOJI_FONT}`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = '#000';
+        ctx.fillText(key, px / 2, px / 2 + px * 0.04);
+        const img = ctx.getImageData(0, 0, px, px);
+        let inked = 0;
+        for (let i = 3; i < img.data.length; i += 4) if (img.data[i] > 40) inked++;
+        // A real glyph covers a good part of the box; a missing-glyph box or nothing at all
+        // does not qualify.
+        if (inked > px * px * 0.02) {
+          const rs = processImage({ data: img.data, width: px, height: px }, EMOJI_COLORS, {
+            removeBg: true,
+            smoothing: 0.15,
+          });
+          if (rs.regions.length && rs.outline.length) result = rs;
+        }
+      }
+    }
+  } catch {
+    result = null;
+  }
+  emojiCache.set(key, result);
+  return result;
+}
+
+/** Number of characters that become blocks (single line, capped). */
+export function blockChars(text: string): string[] {
+  return Array.from(text.replace(/[\r\n]+/g, ' ')).slice(0, MAX_BLOCKS);
+}
+
+/** Keep every symbol attached to a valid slot after the text changed: a symbol that
+ *  pointed past the (now shorter) end moves to the end instead of vanishing. */
+export function normalizeSymbols(symbols: BlockSymbol[], text: string): BlockSymbol[] {
+  const n = blockChars(text).length;
+  return symbols
+    .filter((s) => s && Number.isFinite(s.index) && (!!s.icon || !!s.emoji))
+    .map((s) => ({
+      ...(s.emoji ? { emoji: s.emoji } : { icon: s.icon! }),
+      index: Math.max(0, Math.min(n, Math.round(s.index))),
+    }) as BlockSymbol);
+}
+
+/** Array position of the `pos`-th symbol in `slot`, or where a new one would go
+ *  (after the slot's existing symbols, keeping slots in ascending order). */
+function symbolArrayIndex(symbols: BlockSymbol[], slot: number, pos: number): { found: number; insertAt: number } {
+  let seen = 0;
+  let insertAt = symbols.length;
+  for (let i = 0; i < symbols.length; i++) {
+    if (symbols[i].index === slot) {
+      if (seen === pos) return { found: i, insertAt: i };
+      seen++;
+      insertAt = i + 1;
+    } else if (symbols[i].index > slot && seen === 0 && insertAt === symbols.length) {
+      insertAt = i;
+    }
+  }
+  return { found: -1, insertAt };
+}
+
+/** Insert a symbol in `slot` at position `pos` among that slot's symbols. */
+export function insertSymbol(symbols: BlockSymbol[], slot: number, pos: number, sym: SymbolSpec): BlockSymbol[] {
+  const next = symbols.slice();
+  const { insertAt } = symbolArrayIndex(symbols, slot, pos);
+  next.splice(insertAt, 0, { index: slot, ...sym } as BlockSymbol);
+  return next;
+}
+
+/** Replace (icon) or remove (null) the `pos`-th symbol in `slot`. */
+export function replaceSymbol(symbols: BlockSymbol[], slot: number, pos: number, sym: SymbolSpec | null): BlockSymbol[] {
+  const { found } = symbolArrayIndex(symbols, slot, pos);
+  if (found < 0) return sym ? insertSymbol(symbols, slot, pos, sym) : symbols;
+  const next = symbols.slice();
+  if (sym) next[found] = { index: slot, ...sym } as BlockSymbol;
+  else next.splice(found, 1);
+  return next;
 }
 
 export type BlockItem =
   | { kind: 'char'; ch: string }
   | { kind: 'symbol'; icon: string }
+  | { kind: 'emoji'; emoji: string }
   | { kind: 'blank' };
+
+const symbolItem = (s: SymbolSpec): BlockItem =>
+  s.emoji ? { kind: 'emoji', emoji: s.emoji } : { kind: 'symbol', icon: s.icon ?? '' };
 
 /** Default letter colour: a dark ink so the caps are derived light (black on white). */
 export const BLOCK_INK: RGB = [22, 22, 22];
@@ -34,15 +155,13 @@ export const BLOCK_INK: RGB = [22, 22, 22];
 /** Characters of the text (single line; spaces become blank blocks) with the symbol
  *  slots interleaved. Symbols pointing past the end of a shortened text are dropped. */
 export function blockItems(text: string, symbols: BlockSymbol[]): BlockItem[] {
-  const chars = Array.from(text.replace(/[\r\n]+/g, ' ')).slice(0, MAX_BLOCKS);
-  const bySlot = new Map<number, string>();
-  for (const s of symbols) {
-    if (Number.isInteger(s.index) && s.index >= 0 && s.index <= chars.length && s.icon) bySlot.set(s.index, s.icon);
-  }
+  const chars = blockChars(text);
   const items: BlockItem[] = [];
   for (let i = 0; i <= chars.length; i++) {
-    const icon = bySlot.get(i);
-    if (icon) items.push({ kind: 'symbol', icon });
+    for (const s of symbols) {
+      // Symbols past the end (text got shorter) show at the end rather than vanish.
+      if ((s.icon || s.emoji) && Math.min(chars.length, Math.max(0, s.index)) === i) items.push(symbolItem(s));
+    }
     if (i < chars.length) items.push(chars[i].trim() ? { kind: 'char', ch: chars[i] } : { kind: 'blank' });
   }
   return items.slice(0, MAX_BLOCKS);
@@ -139,30 +258,36 @@ export function traceBlocks(items: BlockItem[], opts: BlocksGlyphOptions): Block
   const yMid = isFinite(yMin) ? (yMin + yMax) / 2 : 0;
 
   const cells: BuildCell[] = [];
-  const components: RegionSet['regions'][number]['components'] = [];
+  // Palette region 0 is the letter/symbol ink; every emoji colour gets its own region
+  // after it (so each can be mapped to a filament), with the emoji's cell as component.
+  const regions: RegionSet['regions'] = [{ quantRgb: BLOCK_INK, components: [], coverage: 1 }];
   for (let i = 0; i < n; i++) {
     const it = items[i];
     let rings: Ring[] = [];
+    const cellRegions: BuildCell['regions'] = [];
     if (it.kind === 'char') {
       const g = glyphs[i];
       if (g) rings = scaleRings(g.rings, k, (g.minX + g.maxX) / 2, yMid);
     } else if (it.kind === 'symbol') {
       rings = scaleRings(symbolRings(it.icon), usable * 0.8);
+    } else if (it.kind === 'emoji') {
+      const rs = traceEmoji(it.emoji);
+      for (const r of rs?.regions ?? []) {
+        const rr = scaleRings(r.components.flatMap((c) => c.rings), usable * 0.9);
+        if (!rr.length) continue;
+        const j = regions.length;
+        const partName = `top-color-${j}-${i}`;
+        // Low coverage keeps the letters the "dominant ink" that the cap colour contrasts.
+        regions.push({ quantRgb: r.quantRgb, components: [{ rings: rr, coverage: r.coverage }], coverage: r.coverage * 0.5 });
+        cellRegions.push({ filamentRgb: r.quantRgb, coverage: r.coverage, rings: rr, partName });
+      }
     }
-    const partName = `top-color-0-${i}`;
-    cells.push({
-      x: 0,
-      y: 0,
-      regions: rings.length ? [{ filamentRgb: BLOCK_INK, coverage: 1, rings, partName }] : [],
-    });
-    components.push({ rings, coverage: rings.length ? 1 : 0 });
+    if (rings.length) cellRegions.push({ filamentRgb: BLOCK_INK, coverage: 1, rings, partName: `top-color-0-${i}` });
+    cells.push({ x: 0, y: 0, regions: cellRegions });
+    regions[0].components.push({ rings, coverage: rings.length ? 1 : 0 });
   }
 
-  const regionSet: RegionSet = {
-    regions: [{ quantRgb: BLOCK_INK, components, coverage: 1 }],
-    outline: [],
-    aspect: 1,
-  };
+  const regionSet: RegionSet = { regions, outline: [], aspect: 1 };
   return { cells, regionSet };
 }
 
