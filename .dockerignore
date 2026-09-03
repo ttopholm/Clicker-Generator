@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.github
+.vite
+.claude
+*.log
+*.zip
+*.local
+.DS_Store

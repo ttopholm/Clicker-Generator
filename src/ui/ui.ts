@@ -1,5 +1,5 @@
-import type { BaseShapeKind, EditMode, EdgeSetting, EdgeStyle, KeychainParams, PaletteEntry, SwitchPlacement, ViewMode, RGB } from '../types';
-import { FILAMENTS } from '../types';
+import type { BaseDepthKind, BaseShapeKind, EditMode, EdgeSetting, EdgeStyle, KeychainParams, PaletteEntry, SwitchPlacement, ViewMode, RGB } from '../types';
+import { DEEP_BASE_EXTRA_MM, FILAMENTS } from '../types';
 import type { SectionAxis } from '../viewer/viewer';
 import { SAMPLES } from '../image/sample';
 import type { RgbaImage } from '../image/decode';
@@ -21,6 +21,8 @@ export interface UiState {
   colorCount: number;
   palette: PaletteEntry[];
   baseShape: BaseShapeKind;
+  /** Regular body, or a deeper one with an accessory pocket under the switch. */
+  baseDepth: BaseDepthKind;
   capWidthMm: number;
   topThickness: number;
   imageDepth: number;
@@ -74,6 +76,8 @@ export interface UiCallbacks {
   onSmoothing(v: number): void;
   onFilament(index: number, hex: string): void;
   onShape(kind: BaseShapeKind): void;
+  /** Pick the standard body or the deeper one (extra room under the switch). */
+  onBaseDepth(kind: BaseDepthKind): void;
   onWidth(mm: number): void;
   onTopThickness(mm: number): void;
   onImageDepth(mm: number): void;
@@ -244,6 +248,13 @@ export function createUi(
           <input type="text" class="val" id="widthVal" />
         </div>
         <input type="range" id="width" min="20" max="70" step="1" />
+      </div>
+      <div class="field" id="baseDepthField" style="margin-top: 12px; margin-bottom: 0;">
+        <label>Base height ${tip(`Standard is the regular base. Deep makes the base ${DEEP_BASE_EXTRA_MM} mm taller below the switch and carries the switch cavity down to the new floor, leaving room for an LED or electronics module (about 13 × 13 × 5 mm) under the switch. The top part and the fit are unchanged.`)}</label>
+        <div class="tabs" id="baseDepthTabs" role="tablist">
+          <button class="tab active" data-depth="standard" type="button">Standard</button>
+          <button class="tab" data-depth="deep" type="button">Deep</button>
+        </div>
       </div>
     </div>
 
@@ -1005,6 +1016,13 @@ export function createUi(
     cb.onShape(shapeSelect.value as BaseShapeKind);
   });
 
+  // --- Base height (standard / deep) ---
+  const baseDepthTabs = $('baseDepthTabs');
+  baseDepthTabs.addEventListener('click', (e) => {
+    const t = (e.target as HTMLElement).closest('[data-depth]') as HTMLElement | null;
+    if (t) cb.onBaseDepth(t.dataset.depth as BaseDepthKind);
+  });
+
   // --- Size sliders ---
   const width = $<HTMLInputElement>('width');
   width.addEventListener('input', () => cb.onWidth(+width.value));
@@ -1356,7 +1374,7 @@ export function createUi(
       focus: 'left',
       target: '#baseStyleSection',
       title: 'Base Outline Shape',
-      text: 'Select the overall base shape for your clicker. You can choose a <strong>Custom Outline</strong> (which matches your imported graphic\'s boundaries), or standard geometries like a <strong>Circle</strong> or <strong>Hexagon</strong>. You can also scale the overall size here.',
+      text: 'Select the overall base shape for your clicker. You can choose a <strong>Custom Outline</strong> (which matches your imported graphic\'s boundaries), or standard geometries like a <strong>Circle</strong> or <strong>Hexagon</strong>. You can also scale the overall size here, and pick a <strong>Deep</strong> base that leaves room for an LED module under the switch.',
       arrow: 'left'
     },
     {
@@ -1842,6 +1860,10 @@ export function createUi(
     } else {
       shapeSelect.disabled = false;
       shapeSelect.value = state.baseShape === 'outline' ? 'circle' : state.baseShape;
+    }
+
+    for (const b of baseDepthTabs.querySelectorAll<HTMLElement>('[data-depth]')) {
+      b.classList.toggle('active', b.dataset.depth === state.baseDepth);
     }
 
     // Update View tabs

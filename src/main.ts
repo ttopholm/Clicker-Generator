@@ -56,6 +56,7 @@ const store = createStore<UiState>({
   colorCount: 4,
   palette: [],
   baseShape: 'outline',
+  baseDepth: 'standard',
   capWidthMm: 35,
   topThickness: 1.5,
   imageDepth: 0.8,
@@ -144,6 +145,11 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
   },
   onShape: (kind) => {
     store.set({ baseShape: kind });
+    debouncedRebuild();
+  },
+  onBaseDepth: (kind) => {
+    // Standard vs deep base: only the body changes (deeper floor + accessory pocket).
+    store.set({ baseDepth: kind });
     debouncedRebuild();
   },
   onWidth: (mm) => {
@@ -436,7 +442,7 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
 // (reprocess) starts a fresh baseline. Restoring rebuilds the geometry.
 const HISTORY_FIELDS = [
   'palette', 'paletteOverrides', 'partOverrides', 'bodyColorRgb', 'baseColorOverride',
-  'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'capWidthMm', 'topThickness',
+  'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'baseDepth', 'capWidthMm', 'topThickness',
   'imageDepth', 'tolerance', 'stemTolerance', 'switches', 'keychain',
 ] as const;
 let history: string[] = [];
@@ -947,6 +953,7 @@ function rebuild(quiet = false) {
   const isText = s.importMode === 'text';
   const params: BuildParams = {
     baseShape: effectiveBaseShape,
+    baseDepth: s.baseDepth,
     capWidthMm: s.capWidthMm,
     topThickness: Math.max(1, s.topThickness),
     imageDepth: s.imageDepth,
@@ -1123,6 +1130,7 @@ function saveProject() {
     settings: {
       colorCount: s.colorCount,
       baseShape: s.baseShape,
+      baseDepth: s.baseDepth,
       capWidthMm: s.capWidthMm,
       topThickness: s.topThickness,
       imageDepth: s.imageDepth,
@@ -1178,6 +1186,7 @@ async function loadProject(file: File) {
       importMode: set.importMode ?? 'image',
       colorCount: set.colorCount ?? store.get().colorCount,
       baseShape: set.baseShape ?? store.get().baseShape,
+      baseDepth: set.baseDepth === 'deep' ? 'deep' : 'standard',
       capWidthMm: set.capWidthMm ?? store.get().capWidthMm,
       topThickness: set.topThickness ?? store.get().topThickness,
       imageDepth: set.imageDepth ?? store.get().imageDepth,
