@@ -270,57 +270,70 @@ export function buildClicker(
     return track(new CrossSection([pts], 'NonZero'));
   };
 
-  // --- Cap plate footprint (the visible top; image + frame) ---
-  let plate: Section;
-  if (params.baseShape === 'outline') {
-    const rawPlate = track(filledOutline().offset(border, 'Round', 2.0, 32));
-    const solidPlate = removeHoles(rawPlate);
-    // Apply morphological closing (+offset followed by -offset) to smooth out
-    // deep scalloped indentations between letters. This prevents the clicker
-    // from binding or sticking due to excessive friction in the sharp valleys.
-    // Then simplify: the round closing fills perimeter arcs with hundreds of points
-    // that every later op would carry — collapse them to a print-invisible tolerance.
-    const smoothingRadius = 4.0;
-    plate = simp(track(solidPlate.offset(smoothingRadius, 'Round', 2.0, 24).offset(-smoothingRadius, 'Round', 2.0, 24)), 0.05);
-  } else {
-    // The geometric shapes scale linearly with their radius, so rather than guessing
-    // a circumscribing radius (which clips the image on concave shapes like the star
-    // or heart), we scale the shape up just enough that the whole image PLUS the
-    // border frame fits inside it.
-    const genShape = (rr: number): Section => {
-      switch (params.baseShape) {
-        case 'square': return roundedRect(2 * rr, 2 * rr, 2 * rr * 0.22);
-        case 'hexagon': return makeHexagon(rr);
-        case 'heart': return makeHeart(rr);
-        case 'star': return makeStar(rr);
-        case 'egg': return makeEgg(rr);
-        case 'circle':
-        default: return track(CrossSection.circle(rr, 160));
-      }
-    };
-    // Rectangle (half-extents) that must sit inside the plate: image + border, with a
-    // floor so tiny images still produce a sensible cap.
-    const halfW = Math.max(imgW / 2 + border, minCap / 2);
-    const halfH = Math.max(imgH / 2 + border, minCap / 2);
-    const unit = genShape(1); // test the image rect against the r = 1 shape
-    const fits = (k: number): boolean => {
-      const rect = track(CrossSection.square([(2 * halfW) / k, (2 * halfH) / k], true));
-      const outside = track(rect.subtract(unit));
-      return sectionIsEmpty(outside);
-    };
-    // Bracket an upper bound that fits, then binary-search the smallest radius.
-    let hi = Math.max(1, Math.hypot(halfW, halfH));
-    for (let i = 0; i < 40 && !fits(hi); i++) hi *= 2;
-    let lo = 1e-3;
-    for (let i = 0; i < 26; i++) {
-      const mid = (lo + hi) / 2;
-      if (fits(mid)) hi = mid;
-      else lo = mid;
-    }
-    plate = genShape(hi);
+  // Blocks mode: one square cap per character on a shared body (see BlocksParams).
+  const blocks = params.blocks && params.blocks.cells.length ? params.blocks : null;
+
+  /** One cap on the shared body. Regions carry rings already in mm (world XY). */
+  interface Cell {
+    plate: Section;
+    imageArea: Section;
+    regions: BuildRegion[];
+    switches: SwitchPlacement[];
+    stemAts: Solid[];
   }
 
-  const imageArea = shrink(plate, border, plate); // flat frame around the image
+  // --- Cap plate footprint (the visible top; image + frame) — single design only ---
+  const makeSinglePlate = (): Section => {
+    let plate: Section;
+    if (params.baseShape === 'outline') {
+      const rawPlate = track(filledOutline().offset(border, 'Round', 2.0, 32));
+      const solidPlate = removeHoles(rawPlate);
+      // Apply morphological closing (+offset followed by -offset) to smooth out
+      // deep scalloped indentations between letters. This prevents the clicker
+      // from binding or sticking due to excessive friction in the sharp valleys.
+      // Then simplify: the round closing fills perimeter arcs with hundreds of points
+      // that every later op would carry — collapse them to a print-invisible tolerance.
+      const smoothingRadius = 4.0;
+      plate = simp(track(solidPlate.offset(smoothingRadius, 'Round', 2.0, 24).offset(-smoothingRadius, 'Round', 2.0, 24)), 0.05);
+    } else {
+      // The geometric shapes scale linearly with their radius, so rather than guessing
+      // a circumscribing radius (which clips the image on concave shapes like the star
+      // or heart), we scale the shape up just enough that the whole image PLUS the
+      // border frame fits inside it.
+      const genShape = (rr: number): Section => {
+        switch (params.baseShape) {
+          case 'square': return roundedRect(2 * rr, 2 * rr, 2 * rr * 0.22);
+          case 'hexagon': return makeHexagon(rr);
+          case 'heart': return makeHeart(rr);
+          case 'star': return makeStar(rr);
+          case 'egg': return makeEgg(rr);
+          case 'circle':
+          default: return track(CrossSection.circle(rr, 160));
+        }
+      };
+      // Rectangle (half-extents) that must sit inside the plate: image + border, with a
+      // floor so tiny images still produce a sensible cap.
+      const halfW = Math.max(imgW / 2 + border, minCap / 2);
+      const halfH = Math.max(imgH / 2 + border, minCap / 2);
+      const unit = genShape(1); // test the image rect against the r = 1 shape
+      const fits = (k: number): boolean => {
+        const rect = track(CrossSection.square([(2 * halfW) / k, (2 * halfH) / k], true));
+        const outside = track(rect.subtract(unit));
+        return sectionIsEmpty(outside);
+      };
+      // Bracket an upper bound that fits, then binary-search the smallest radius.
+      let hi = Math.max(1, Math.hypot(halfW, halfH));
+      for (let i = 0; i < 40 && !fits(hi); i++) hi *= 2;
+      let lo = 1e-3;
+      for (let i = 0; i < 26; i++) {
+        const mid = (lo + hi) / 2;
+        if (fits(mid)) hi = mid;
+        else lo = mid;
+      }
+      plate = genShape(hi);
+    }
+  return plate;
+  };
 
   // --- Switch placement: 1..3 switches, each nudged/rotated off the design centre so
   //     it sits under solid material (a centred switch under a hollow part of the
@@ -329,50 +342,53 @@ export function buildClicker(
   //     valid range exists on both axes — then enforce a minimum centre-to-centre
   //     pitch so multiple sockets never overlap. The applied array is reported back so
   //     the preview switch meshes match the geometry.
-  const plateBB = plate.bounds();
-  const halfCol = switchClear / 2;
-  const loX = plateBB.min[0] + halfCol;
-  const hiX = plateBB.max[0] - halfCol;
-  const loY = plateBB.min[1] + halfCol;
-  const hiY = plateBB.max[1] - halfCol;
-  const clampAxis = (v: number, lo: number, hi: number) =>
-    lo > hi ? (lo + hi) / 2 : Math.min(hi, Math.max(lo, v));
-  const clampX = (v: number) => clampAxis(v, loX, hiX);
-  const clampY = (v: number) => clampAxis(v, loY, hiY);
+  const warnings: string[] = [];
+  const placeSingleSwitches = (plate: Section): SwitchPlacement[] => {
+    const plateBB = plate.bounds();
+    const halfCol = switchClear / 2;
+    const loX = plateBB.min[0] + halfCol;
+    const hiX = plateBB.max[0] - halfCol;
+    const loY = plateBB.min[1] + halfCol;
+    const hiY = plateBB.max[1] - halfCol;
+    const clampAxis = (v: number, lo: number, hi: number) =>
+      lo > hi ? (lo + hi) / 2 : Math.min(hi, Math.max(lo, v));
+    const clampX = (v: number) => clampAxis(v, loX, hiX);
+    const clampY = (v: number) => clampAxis(v, loY, hiY);
 
-  const requested = (params.switches?.length ? params.switches : [{ x: 0, y: 0, rotation: 0 }]).slice(0, 3);
-  const applied: SwitchPlacement[] = requested.map((sw) => ({
-    x: clampX(sw.x ?? 0),
-    y: clampY(sw.y ?? 0),
-    rotation: sw.rotation ?? 0,
-  }));
-  // Enforce a minimum centre-to-centre pitch (≈16 mm for MX): push the later switch
-  // of any too-close pair away along the axis of largest separation, then re-clamp.
-  // Two passes settle a 3-switch row; it's a heuristic, not a physics solver.
-  const SWITCH_PITCH_MIN = socketDim + 2.0;
-  let pinched = false;
-  for (let pass = 0; pass < 2; pass++) {
-    for (let i = 0; i < applied.length; i++) {
-      for (let j = i + 1; j < applied.length; j++) {
-        const a = applied[i];
-        const b = applied[j];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        if (Math.hypot(dx, dy) < SWITCH_PITCH_MIN) {
-          pinched = true;
-          if (Math.abs(dx) >= Math.abs(dy)) {
-            b.x = clampX(a.x + (dx < 0 ? -1 : 1) * SWITCH_PITCH_MIN);
-          } else {
-            b.y = clampY(a.y + (dy < 0 ? -1 : 1) * SWITCH_PITCH_MIN);
+    const requested = (params.switches?.length ? params.switches : [{ x: 0, y: 0, rotation: 0 }]).slice(0, 3);
+    const applied: SwitchPlacement[] = requested.map((sw) => ({
+      x: clampX(sw.x ?? 0),
+      y: clampY(sw.y ?? 0),
+      rotation: sw.rotation ?? 0,
+    }));
+    // Enforce a minimum centre-to-centre pitch (≈16 mm for MX): push the later switch
+    // of any too-close pair away along the axis of largest separation, then re-clamp.
+    // Two passes settle a 3-switch row; it's a heuristic, not a physics solver.
+    const SWITCH_PITCH_MIN = socketDim + 2.0;
+    let pinched = false;
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < applied.length; i++) {
+        for (let j = i + 1; j < applied.length; j++) {
+          const a = applied[i];
+          const b = applied[j];
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          if (Math.hypot(dx, dy) < SWITCH_PITCH_MIN) {
+            pinched = true;
+            if (Math.abs(dx) >= Math.abs(dy)) {
+              b.x = clampX(a.x + (dx < 0 ? -1 : 1) * SWITCH_PITCH_MIN);
+            } else {
+              b.y = clampY(a.y + (dy < 0 ? -1 : 1) * SWITCH_PITCH_MIN);
+            }
           }
         }
       }
     }
-  }
-  const warnings: string[] = [];
-  if (pinched && requested.length > 1) {
-    warnings.push('Switches were pulled together to fit the cap — increase Size for more room.');
-  }
+    if (pinched && requested.length > 1) {
+      warnings.push('Switches were pulled together to fit the cap — increase Size for more room.');
+    }
+  return applied;
+  };
 
   // Stem fit: scale the keycap-mount stem in XY so its cross socket opens up (positive
   // = looser, easier to press onto the switch) or closes (negative = tighter grip).
@@ -398,8 +414,40 @@ export function buildClicker(
     const r = Math.abs(sw.rotation) > 0.001 ? track(s.rotate([0, 0, sw.rotation])) : s;
     return Math.abs(sw.x) > 0.001 || Math.abs(sw.y) > 0.001 ? track(r.translate([sw.x, sw.y, 0])) : r;
   };
+  // --- Cells: the single design is one cell carrying the user's switch placements;
+  //     Blocks mode has one square cell per character, each with its own centred
+  //     switch. Cell regions carry rings already scaled to mm at their world position. ---
+  let cells: Cell[];
+  let blockCorner = 0;
+  if (blocks) {
+    const size = Math.max(minCap, blocks.size);
+    blockCorner = Math.min(3.0, size * 0.15);
+    cells = blocks.cells.map((c) => {
+      const plate = track(roundedRect(size, size, blockCorner).translate([c.x, c.y]));
+      return {
+        plate,
+        imageArea: shrink(plate, border, plate),
+        regions: c.regions.map((r) => ({
+          ...r,
+          rings: r.rings.map((ring) => ring.map(([x, y]) => [x + c.x, y + c.y] as [number, number])),
+        })),
+        switches: [{ x: c.x, y: c.y, rotation: 0 }],
+        stemAts: [],
+      };
+    });
+  } else {
+    const plate = makeSinglePlate();
+    cells = [{
+      plate,
+      imageArea: shrink(plate, border, plate), // flat frame around the image
+      regions: regions.map((r) => ({ ...r, rings: scaleRings(r.rings) })),
+      switches: placeSingleSwitches(plate),
+      stemAts: [],
+    }];
+  }
+  const applied: SwitchPlacement[] = cells.flatMap((c) => c.switches);
   const socketAts: Solid[] = applied.map((sw) => placeSolidAt(socket, sw));
-  const stemAts: Solid[] = applied.map((sw) => placeSolidAt(stemSized, sw));
+  for (const cell of cells) cell.stemAts = cell.switches.map((sw) => placeSolidAt(stemSized, sw));
 
   // Well = cap footprint (slip-fit) UNIONED with a guaranteed clear column over EACH
   // switch, so a concave outline or small cap can never wall off a socket. The body
@@ -407,16 +455,36 @@ export function buildClicker(
   // notch would otherwise block a switch. Each column rotates with its switch so its
   // clearance stays aligned even at an angle.
   const socketColumnBase = roundedRect(switchClear, switchClear, 2.5);
-  let wellFp: Section = grow(plate, tol); // cap slips in with `tol`
-  for (const sw of applied) {
-    const col = track(
-      (Math.abs(sw.rotation) > 0.001 ? track(socketColumnBase.rotate(sw.rotation)) : socketColumnBase)
-        .translate([sw.x, sw.y]),
-    );
-    wellFp = track(wellFp.add(col));
+  let wellFp: Section | null = null;
+  for (const cell of cells) {
+    let fp: Section = grow(cell.plate, tol); // cap slips in with `tol`
+    for (const sw of cell.switches) {
+      const col = track(
+        (Math.abs(sw.rotation) > 0.001 ? track(socketColumnBase.rotate(sw.rotation)) : socketColumnBase)
+          .translate([sw.x, sw.y]),
+      );
+      fp = track(fp.add(col));
+    }
+    wellFp = wellFp ? track(wellFp.add(fp)) : fp;
   }
-  const wellFootprint = simp(wellFp);
-  const bodyFootprint = simp(grow(wellFootprint, Math.max(0.4, params.borderWidth)));
+  const wellFootprint = simp(wellFp!);
+  const borderW = Math.max(0.4, params.borderWidth);
+  let bodyFootprint: Section;
+  if (blocks) {
+    // Blocks: one straight-edged plate around every well. Growing the wells would
+    // scallop the long edges where neighbouring blocks' rounded corners meet.
+    const b = wellFootprint.bounds();
+    const w = b.max[0] - b.min[0] + 2 * borderW;
+    const h = b.max[1] - b.min[1] + 2 * borderW;
+    bodyFootprint = track(
+      roundedRect(w, h, blockCorner + tol + borderW).translate([
+        (b.min[0] + b.max[0]) / 2,
+        (b.min[1] + b.max[1]) / 2,
+      ]),
+    );
+  } else {
+    bodyFootprint = simp(grow(wellFootprint, borderW));
+  }
 
   // --- Z layout (shared assembly frame: Z = 0 is the switch-plate top) ---
   const cavityFloorZ = socketBB.max[2]; // socket top = plate plane (≈ 0); the well opens to it
@@ -503,127 +571,146 @@ export function buildClicker(
       return track(cutter.translate([0, 0, stepZ]));
   };
 
-  const parts: ClickerPart[] = [];
+  // --- Caps: one per cell (plate + inlays + stem + skirt + rim bevel). ---
+  const capParts: ClickerPart[] = [];
+  const buildCellCap = (cell: Cell): void => {
+    const { plate, imageArea, regions, stemAts } = cell;
+    const applied = cell.switches;
+    const parts: ClickerPart[] = [];
 
-  // --- Cap plate (backing + image layer), flat top, + stem underneath ---
-  const cap: Solid = extrudeAt(plate, backing + imageDepth, slabBottomZ);
+    // --- Cap plate (backing + image layer), flat top, + stem underneath ---
+    const cap: Solid = extrudeAt(plate, backing + imageDepth, slabBottomZ);
 
-  // --- Image inlays: carved non-overlapping, smallest coverage first so detail
-  //     colors win at shared boundaries. Clean even when all colors are flat.
-  //     topSlab is exactly `imageDepth` tall so inlays end flush with the cap's
-  //     top face (slabTopZ) — the top reads as ONE flat surface, not raised. ---
-  const ordered = regions
-    .map((r) => ({ r }))
-    .sort((a, b) => (a.r.coverage ?? 1) - (b.r.coverage ?? 1));
+    // --- Image inlays: carved non-overlapping, smallest coverage first so detail
+    //     colors win at shared boundaries. Clean even when all colors are flat.
+    //     topSlab is exactly `imageDepth` tall so inlays end flush with the cap's
+    //     top face (slabTopZ) — the top reads as ONE flat surface, not raised. ---
+    const ordered = regions
+      .map((r) => ({ r }))
+      .sort((a, b) => (a.r.coverage ?? 1) - (b.r.coverage ?? 1));
     
-  let placed2D: Section | null = null; // 2D union of inlays already carved (no overlap)
-  const holesByLevel = new Map<number, Section>();
+    let placed2D: Section | null = null; // 2D union of inlays already carved (no overlap)
+    const holesByLevel = new Map<number, Section>();
 
-  for (const { r } of ordered) {
-    const validRings = scaleRings(r.rings).filter(ring => ring.length >= 3 && getRingArea(ring) > 0.001);
-    if (validRings.length === 0) continue;
-    let cs: Section = simp(track(new CrossSection(validRings, 'NonZero')), 0.03);
-    if (params.colorBleed > 0.001) cs = grow(cs, params.colorBleed);
-    const clipped = track(cs.intersect(imageArea));
-    if (sectionIsEmpty(clipped)) continue;
+    for (const { r } of ordered) {
+      const validRings = r.rings.filter(ring => ring.length >= 3 && getRingArea(ring) > 0.001);
+      if (validRings.length === 0) continue;
+      let cs: Section = simp(track(new CrossSection(validRings, 'NonZero')), 0.03);
+      if (params.colorBleed > 0.001) cs = grow(cs, params.colorBleed);
+      const clipped = track(cs.intersect(imageArea));
+      if (sectionIsEmpty(clipped)) continue;
     
-    // Prevent overlapping with smaller parts processed earlier
-    let fp = clipped;
-    if (placed2D) fp = track(fp.subtract(placed2D));
-    if (sectionIsEmpty(fp)) continue;
+      // Prevent overlapping with smaller parts processed earlier
+      let fp = clipped;
+      if (placed2D) fp = track(fp.subtract(placed2D));
+      if (sectionIsEmpty(fp)) continue;
     
-    placed2D = placed2D ? track(placed2D.add(fp)) : fp;
+      placed2D = placed2D ? track(placed2D.add(fp)) : fp;
 
-    const level = params.componentHeights?.[r.partName] ?? 0;
-    const heightShift = level * params.stepHeight;
-    const topZ = slabTopZ + Math.max(0, heightShift);
-    const bottomZ = imageBottomZ + Math.min(0, heightShift);
+      const level = params.componentHeights?.[r.partName] ?? 0;
+      const heightShift = level * params.stepHeight;
+      const topZ = slabTopZ + Math.max(0, heightShift);
+      const bottomZ = imageBottomZ + Math.min(0, heightShift);
     
-    let inlay: Solid = extrudeAt(fp, topZ - bottomZ, bottomZ);
-    if (inlay.isEmpty()) continue;
+      let inlay: Solid = extrudeAt(fp, topZ - bottomZ, bottomZ);
+      if (inlay.isEmpty()) continue;
 
-    // Round (fillet) or bevel (chamfer) the TOP edge of this color part. Two sources:
-    //   1. An explicit per-part entry configured in Edges mode (takes priority).
-    //   2. The global "Chamfer edges" toggle from Extrude mode — a fixed chamfer on
-    //      EVERY raised part, not tied to any selection.
-    // Default (neither): no rounding on inlays — only the outer cap frame + body edges.
-    const es = params.edgeSettings?.find(s => s.target === r.partName);
-    let edgeStyle: EdgeStyle | null = null;
-    let edgeRadius = 0;
-    if (es && es.style !== 'none' && es.radius >= 0.05) {
-      edgeStyle = es.style;
-      edgeRadius = es.radius;
-    } else if (params.extrudeChamfer && heightShift > 0) {
-      // Global toggle: bevel the top edge of every RAISED color part only. Parts you
-      // haven't touched (level 0, flush with the cap top) are left sharp — the chamfer
-      // is meant for the relief you extrude up in Extrude mode.
-      edgeStyle = 'chamfer';
-      edgeRadius = 0.5;
+      // Round (fillet) or bevel (chamfer) the TOP edge of this color part. Two sources:
+      //   1. An explicit per-part entry configured in Edges mode (takes priority).
+      //   2. The global "Chamfer edges" toggle from Extrude mode — a fixed chamfer on
+      //      EVERY raised part, not tied to any selection.
+      // Default (neither): no rounding on inlays — only the outer cap frame + body edges.
+      const es = params.edgeSettings?.find(s => s.target === r.partName);
+      let edgeStyle: EdgeStyle | null = null;
+      let edgeRadius = 0;
+      if (es && es.style !== 'none' && es.radius >= 0.05) {
+        edgeStyle = es.style;
+        edgeRadius = es.radius;
+      } else if (params.extrudeChamfer && heightShift > 0) {
+        // Global toggle: bevel the top edge of every RAISED color part only. Parts you
+        // haven't touched (level 0, flush with the cap top) are left sharp — the chamfer
+        // is meant for the relief you extrude up in Extrude mode.
+        edgeStyle = 'chamfer';
+        edgeRadius = 0.5;
+      }
+      if (edgeStyle) {
+        // The bevel can't exceed roughly half the part's height, so on a flat color
+        // layer it stays subtle; extrude the part first for a bigger fillet.
+        const radius = Math.min(edgeRadius, (topZ - bottomZ) * 0.49, 3.0);
+        if (radius >= 0.05) {
+          const modBlock = createEdgeBevelBlock(fp, radius, edgeStyle, topZ, false);
+          if (modBlock) inlay = track(inlay.subtract(modBlock));
+        }
+      }
+
+      parts.push(toPart(inlay, 'cap', 'top', r.filamentRgb, r.partName));
+    
+      // Group the 2D footprint by its level to carve a single hole per height level
+      const existing = holesByLevel.get(level);
+      holesByLevel.set(level, existing ? track(existing.add(fp)) : fp);
     }
-    if (edgeStyle) {
-      // The bevel can't exceed roughly half the part's height, so on a flat color
-      // layer it stays subtle; extrude the part first for a bigger fillet.
-      const radius = Math.min(edgeRadius, (topZ - bottomZ) * 0.49, 3.0);
-      if (radius >= 0.05) {
-        const modBlock = createEdgeBevelBlock(fp, radius, edgeStyle, topZ, false);
-        if (modBlock) inlay = track(inlay.subtract(modBlock));
+
+    // Base-color cap = plate − holes, then ∪ stem ∪ perimeter skirt.
+    let base: Solid = cap;
+    for (const [level, hole2D] of holesByLevel.entries()) {
+      const heightShift = level * params.stepHeight;
+      const bottomZ = imageBottomZ + Math.min(0, heightShift);
+      const holePrism = extrudeAt(hole2D, slabTopZ - bottomZ + 0.02, bottomZ - 0.01);
+      base = track(base.subtract(holePrism));
+    }
+    for (const st of stemAts) base = track(base.add(st));
+    if (skirtLen > 0.4) {
+      // Root issue: any 2-D ring-minus-stemZone is algebraically identical to
+      // punching a notch in the border. The only notch-free approach is to ensure
+      // the skirt base plate's outer edge is already OUTSIDE the stem zone, so no
+      // material ever needs to be removed.
+      //
+      // Strategy: expand the skirt plate outward by unioning it with a rounded rect
+      // that is (12 + 2×skirtThickness) wide — guaranteeing the ring's INNER edge
+      // sits exactly at the 12 mm stem-clear boundary. The ring outer edge is wherever
+      // the original plate or this guard square is larger (whichever is further out).
+      // No subtraction → no notch → continuous border.
+      //
+      // Z flush: where skirtBasePlate exceeds the original cap plate we add a thin
+      // backing fill so the skirt top has something solid above it (no ledge/gap).
+      const stemGuard = 12 + 2 * skirtThickness; // inner edge lands exactly at ±6 mm around each stem
+      let skirtBasePlate: Section = plate;
+      for (const sw of applied) {
+        const stemGuardCs = track(track(CrossSection.square([stemGuard, stemGuard], true)).translate([sw.x, sw.y]));
+        skirtBasePlate = track(skirtBasePlate.add(stemGuardCs));
+      }
+      const skirtInner = track(skirtBasePlate.offset(-skirtThickness, 'Miter', 2.0));
+      if (!sectionIsEmpty(skirtInner)) {
+        const skirtRing = track(skirtBasePlate.subtract(skirtInner));
+        // +0.3 overlaps up into the plate so the union is volumetric (no coplanar seam).
+        const skirt = extrudeAt(skirtRing, skirtLen + 0.3, skirtBottomZ);
+        base = track(base.add(skirt));
+        // Fill any area where skirtBasePlate extends beyond the original cap plate,
+        // at the cap-underside level, so the skirt top is flush (no Z gap or step).
+        const skirtExtension = track(skirtBasePlate.subtract(plate));
+        if (!sectionIsEmpty(skirtExtension)) {
+          // Extend the fill all the way from the skirt bottom to the cap top face
+          // so the expanded area is level with the top surface — no step, no ledge.
+          const capFill = extrudeAt(skirtExtension, slabTopZ - skirtBottomZ, skirtBottomZ);
+          base = track(base.add(capFill));
+        }
       }
     }
-
-    parts.push(toPart(inlay, 'cap', 'top', r.filamentRgb, r.partName));
-    
-    // Group the 2D footprint by its level to carve a single hole per height level
-    const existing = holesByLevel.get(level);
-    holesByLevel.set(level, existing ? track(existing.add(fp)) : fp);
-  }
-
-  // Base-color cap = plate − holes, then ∪ stem ∪ perimeter skirt.
-  let base: Solid = cap;
-  for (const [level, hole2D] of holesByLevel.entries()) {
-    const heightShift = level * params.stepHeight;
-    const bottomZ = imageBottomZ + Math.min(0, heightShift);
-    const holePrism = extrudeAt(hole2D, slabTopZ - bottomZ + 0.02, bottomZ - 0.01);
-    base = track(base.subtract(holePrism));
-  }
-  for (const st of stemAts) base = track(base.add(st));
-  if (skirtLen > 0.4) {
-    // Root issue: any 2-D ring-minus-stemZone is algebraically identical to
-    // punching a notch in the border. The only notch-free approach is to ensure
-    // the skirt base plate's outer edge is already OUTSIDE the stem zone, so no
-    // material ever needs to be removed.
-    //
-    // Strategy: expand the skirt plate outward by unioning it with a rounded rect
-    // that is (12 + 2×skirtThickness) wide — guaranteeing the ring's INNER edge
-    // sits exactly at the 12 mm stem-clear boundary. The ring outer edge is wherever
-    // the original plate or this guard square is larger (whichever is further out).
-    // No subtraction → no notch → continuous border.
-    //
-    // Z flush: where skirtBasePlate exceeds the original cap plate we add a thin
-    // backing fill so the skirt top has something solid above it (no ledge/gap).
-    const stemGuard = 12 + 2 * skirtThickness; // inner edge lands exactly at ±6 mm around each stem
-    let skirtBasePlate: Section = plate;
-    for (const sw of applied) {
-      const stemGuardCs = track(track(CrossSection.square([stemGuard, stemGuard], true)).translate([sw.x, sw.y]));
-      skirtBasePlate = track(skirtBasePlate.add(stemGuardCs));
-    }
-    const skirtInner = track(skirtBasePlate.offset(-skirtThickness, 'Miter', 2.0));
-    if (!sectionIsEmpty(skirtInner)) {
-      const skirtRing = track(skirtBasePlate.subtract(skirtInner));
-      // +0.3 overlaps up into the plate so the union is volumetric (no coplanar seam).
-      const skirt = extrudeAt(skirtRing, skirtLen + 0.3, skirtBottomZ);
-      base = track(base.add(skirt));
-      // Fill any area where skirtBasePlate extends beyond the original cap plate,
-      // at the cap-underside level, so the skirt top is flush (no Z gap or step).
-      const skirtExtension = track(skirtBasePlate.subtract(plate));
-      if (!sectionIsEmpty(skirtExtension)) {
-        // Extend the fill all the way from the skirt bottom to the cap top face
-        // so the expanded area is level with the top surface — no step, no ledge.
-        const capFill = extrudeAt(skirtExtension, slabTopZ - skirtBottomZ, skirtBottomZ);
-        base = track(base.add(capFill));
+    // Cap rim bevel: 'capTop' is the global cap-top edge; 'top-base' is the cap frame
+    // selected directly in Edges mode. Both round the cap's top rim.
+    for (const es of params.edgeSettings) {
+      if ((es.target === 'capTop' || es.target === 'top-base') && es.style !== 'none') {
+        const r = Math.min(es.radius, (backing + imageDepth) * 0.4, 2.5);
+        if (r > 0.05) {
+          const modBlock = createEdgeBevelBlock(plate, r, es.style, slabTopZ, false);
+          if (modBlock) base = track(base.subtract(modBlock));
+        }
       }
     }
-  }
-  parts.unshift(toPart(base, 'cap', 'top', params.baseFilamentRgb, 'top-base'));
+    parts.unshift(toPart(base, 'cap', 'top', params.baseFilamentRgb, 'top-base'));
+    capParts.push(...parts);
+  };
+  for (const cell of cells) buildCellCap(cell);
 
   // Deep-base pocket: the socket's own footprint (its widest section, at the cavity
   // floor) extruded down by `extraDepth`. It overlaps 0.5 mm up into the socket cut so
@@ -770,28 +857,9 @@ export function buildClicker(
     }
   }
 
+  const parts: ClickerPart[] = [...capParts];
   if (!body.isEmpty()) {
     parts.push(toPart(body, 'body', 'base', params.bodyColorRgb, 'base-body'));
-  }
-
-  // --- Cap edge modifications. 'capTop' is the global cap-top edge; 'top-base' is
-  //     the cap frame selected directly in Edges mode. Both round the cap's top rim. ---
-  if (parts.length > 0) {
-    const basePartIdx = parts.findIndex(p => p.name === 'top-base');
-    if (basePartIdx >= 0) {
-      for (const es of params.edgeSettings) {
-        if ((es.target === 'capTop' || es.target === 'top-base') && es.style !== 'none') {
-          const r = Math.min(es.radius, (backing + imageDepth) * 0.4, 2.5);
-          if (r > 0.05) {
-            const modBlock = createEdgeBevelBlock(plate, r, es.style, slabTopZ, false);
-            if (modBlock) {
-              base = track(base.subtract(modBlock));
-              parts[basePartIdx] = toPart(base, 'cap', 'top', params.baseFilamentRgb, 'top-base');
-            }
-          }
-        }
-      }
-    }
   }
 
   for (const o of trash) {

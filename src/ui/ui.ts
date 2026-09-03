@@ -1,4 +1,4 @@
-import type { BaseDepthKind, BaseShapeKind, EditMode, EdgeSetting, EdgeStyle, KeychainParams, PaletteEntry, SwitchPlacement, ViewMode, RGB } from '../types';
+import type { BaseDepthKind, BaseShapeKind, BlocksLayout, EditMode, EdgeSetting, EdgeStyle, ImportMode, KeychainParams, PaletteEntry, SwitchPlacement, ViewMode, RGB } from '../types';
 import { DEEP_BASE_EXTRA_MM, FILAMENTS } from '../types';
 import type { SectionAxis } from '../viewer/viewer';
 import { SAMPLES } from '../image/sample';
@@ -6,6 +6,7 @@ import type { RgbaImage } from '../image/decode';
 import type { FontOption } from '../image/letter';
 import { FONT_OPTIONS, loadBundledFonts } from '../image/letter';
 import { LUCIDE_ICONS, buildSvg, svgDataUrl } from '../image/lucideIcons';
+import { MAX_BLOCKS, type BlockSymbol } from '../image/blocks';
 
 /** Base path for bundled public assets (favicon logos, etc.). */
 const ASSET_BASE = import.meta.env.BASE_URL;
@@ -39,7 +40,16 @@ export interface UiState {
   removeBg: boolean;
   view: ViewMode;
   showSwitch: boolean;
-  importMode: 'image' | 'svg' | 'icon' | 'text';
+  importMode: ImportMode;
+  /** Blocks mode: the word (one block per character) and the symbol blocks slotted
+   *  between letters (`index` = position before that letter, text.length = at the end). */
+  blocksText: string;
+  blockSymbols: BlockSymbol[];
+  blocksLayout: BlocksLayout;
+  /** Glyph box as a fraction of the block's usable area (1 = 100 %). */
+  blocksLetterScale: number;
+  /** Block (keycap) side length, mm. */
+  blocksSize: number;
   currentIconName: string;
   colorMode: 'normal' | 'limited';
   limitedColors: RGB[];
@@ -116,7 +126,14 @@ export interface UiCallbacks {
   onBodyColor(hex: string): void;
 
   // New callbacks for vector modes
-  onImportMode(mode: 'image' | 'svg' | 'icon' | 'text'): void;
+  onImportMode(mode: ImportMode): void;
+  /** Blocks mode edits (all apply live). */
+  onBlocksText(text: string): void;
+  /** Set (icon name) or remove (null) the symbol block in slot `index`. */
+  onBlockSymbol(index: number, icon: string | null): void;
+  onBlocksLayout(layout: BlocksLayout): void;
+  onBlocksLetterScale(scale: number): void;
+  onBlocksSize(mm: number): void;
   onSvgUpload(file: File): void;
   onSelectSvg(svgText: string, name: string): void;
   onSelectIcon(svgText: string, name: string): void;
@@ -255,6 +272,31 @@ export function createUi(
           <button class="tab active" data-depth="standard" type="button">Standard</button>
           <button class="tab" data-depth="deep" type="button">Deep</button>
         </div>
+      </div>
+    </div>
+
+    <div class="section" id="blocksSection" hidden>
+      <span class="label">Blocks</span>
+      <div class="field">
+        <label>Layout ${tip('Arrange the blocks in a row (Horizontal) or a column (Vertical).')}</label>
+        <div class="tabs" id="blocksLayoutTabs" role="tablist">
+          <button class="tab active" data-layout="horizontal" type="button">Horizontal</button>
+          <button class="tab" data-layout="vertical" type="button">Vertical</button>
+        </div>
+      </div>
+      <div class="prow-stacked">
+        <div class="prow-header">
+          <label for="blocksLetterScale">Letter size ${tip('How much of each block the letter fills. All letters share one size and baseline, so the word reads as typeset text.')}</label>
+          <input type="text" class="val" id="blocksLetterScaleVal" />
+        </div>
+        <input type="range" id="blocksLetterScale" min="50" max="120" step="5" />
+      </div>
+      <div class="prow-stacked">
+        <div class="prow-header">
+          <label for="blocksSize">Block size ${tip('Side length of each block (its keycap), in mm. The shared base grows with it.')}</label>
+          <input type="text" class="val" id="blocksSizeVal" />
+        </div>
+        <input type="range" id="blocksSize" min="20" max="40" step="1" />
       </div>
     </div>
 
@@ -504,6 +546,16 @@ export function createUi(
           </span>
           <span class="card-label">Text</span>
         </button>
+        <button class="import-card import-card-wide" data-mode="blocks" type="button">
+          <span class="card-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="7" width="6" height="10" rx="1.5"/>
+              <rect x="9" y="7" width="6" height="10" rx="1.5"/>
+              <rect x="16" y="7" width="6" height="10" rx="1.5"/>
+            </svg>
+          </span>
+          <span class="card-label">Blocks</span>
+        </button>
       </div>
 
       <!-- Image Panel -->
@@ -569,15 +621,31 @@ export function createUi(
           <label for="letterText">Custom Text</label>
           <textarea id="letterText" rows="2" maxlength="30" autocomplete="off" spellcheck="false" style="width: 100%; resize: vertical; min-height: 48px;">Custom\nText</textarea>
         </div>
-        <div class="field">
-          <label>Font</label>
-          <div id="fontGrid" class="font-grid"></div>
-          <label class="upload">
-            + Import font
-            <input id="fontUpload" type="file" accept=".ttf,.otf,.json,font/ttf,font/otf,application/json" />
-          </label>
+        <div id="textFontHost">
+          <div class="field" id="fontField">
+            <label>Font</label>
+            <div id="fontGrid" class="font-grid"></div>
+            <label class="upload">
+              + Import font
+              <input id="fontUpload" type="file" accept=".ttf,.otf,.json,font/ttf,font/otf,application/json" />
+            </label>
+          </div>
         </div>
         <button class="primary" id="generateText" style="margin-top: 10px; width: 100%;">Generate</button>
+      </div>
+
+      <!-- Blocks Panel -->
+      <div id="blocksPanel" class="mode-panel" hidden>
+        <div class="field">
+          <label for="blocksText">Text ${tip(`One block per character, up to ${MAX_BLOCKS}. A space makes a blank block. Changes apply as you type.`)}</label>
+          <input id="blocksText" type="text" maxlength="${MAX_BLOCKS}" autocomplete="off" spellcheck="false" placeholder="Name" />
+        </div>
+        <div class="field">
+          <label>Add symbol ${tip('Insert a symbol block anywhere in the word. Symbols come from the same Lucide icon set as the Icon tab.')}</label>
+          <p class="hint-text" style="margin-top:0;">Press + between two blocks to add a symbol there, or click a symbol to change or remove it.</p>
+          <div id="blockChips" class="block-chips" role="list"></div>
+        </div>
+        <div id="blocksFontHost"></div>
       </div>
     </div>
 
@@ -1023,6 +1091,138 @@ export function createUi(
     if (t) cb.onBaseDepth(t.dataset.depth as BaseDepthKind);
   });
 
+  // --- Blocks: text, layout, sizes, symbol slots ---
+  const blocksText = $<HTMLInputElement>('blocksText');
+  blocksText.addEventListener('input', () => cb.onBlocksText(blocksText.value));
+  const blocksLayoutTabs = $('blocksLayoutTabs');
+  blocksLayoutTabs.addEventListener('click', (e) => {
+    const t = (e.target as HTMLElement).closest('[data-layout]') as HTMLElement | null;
+    if (t) cb.onBlocksLayout(t.dataset.layout as BlocksLayout);
+  });
+  const blocksLetterScale = $<HTMLInputElement>('blocksLetterScale');
+  blocksLetterScale.addEventListener('input', () => cb.onBlocksLetterScale(+blocksLetterScale.value / 100));
+  const blocksSize = $<HTMLInputElement>('blocksSize');
+  blocksSize.addEventListener('input', () => cb.onBlocksSize(+blocksSize.value));
+  const blockChips = $('blockChips');
+  blockChips.addEventListener('click', (e) => {
+    const t = (e.target as HTMLElement).closest('[data-slot]') as HTMLElement | null;
+    if (!t) return;
+    openSymbolPicker(+t.dataset.slot!, t.dataset.icon || null);
+  });
+
+  // Symbol picker: a small modal over the app with a searchable Lucide grid. Picking an
+  // icon sets the slot; "Remove" clears it. Reuses the gallery's .icon styling.
+  function openSymbolPicker(slot: number, currentIcon: string | null) {
+    document.querySelectorAll('.symbol-overlay').forEach((n) => n.remove());
+    const overlay = document.createElement('div');
+    overlay.className = 'symbol-overlay';
+    overlay.innerHTML = `
+      <div class="symbol-card" role="dialog" aria-label="Choose a symbol">
+        <div class="symbol-head">
+          <strong>${currentIcon ? 'Change symbol' : 'Add symbol'}</strong>
+          <button type="button" class="symbol-close" aria-label="Close">×</button>
+        </div>
+        <input type="search" class="symbol-search" placeholder="Search Lucide icons…" autocomplete="off" spellcheck="false" />
+        <div class="symbol-grid"></div>
+        <div class="symbol-foot">
+          <span class="symbol-count"></span>
+          ${currentIcon ? '<button type="button" class="btn symbol-remove">Remove symbol</button>' : ''}
+        </div>
+      </div>`;
+    const close = () => overlay.remove();
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) close();
+    });
+    overlay.querySelector('.symbol-close')!.addEventListener('click', close);
+    overlay.querySelector('.symbol-remove')?.addEventListener('click', () => {
+      cb.onBlockSymbol(slot, null);
+      close();
+    });
+    const grid = overlay.querySelector('.symbol-grid') as HTMLElement;
+    const count = overlay.querySelector('.symbol-count') as HTMLElement;
+    const search = overlay.querySelector('.symbol-search') as HTMLInputElement;
+    const PAGE = 120;
+    const render = () => {
+      const q = search.value.trim().toLowerCase();
+      const matches = q
+        ? LUCIDE_ICONS.filter((ic) => ic.name.includes(q)).sort((a, b) => a.name.indexOf(q) - b.name.indexOf(q))
+        : LUCIDE_ICONS;
+      grid.innerHTML = '';
+      const frag = document.createDocumentFragment();
+      for (const ic of matches.slice(0, PAGE)) {
+        const el = makeIconEl(svgDataUrl(buildSvg(ic.node)), ic.name, () => {
+          cb.onBlockSymbol(slot, ic.name);
+          close();
+        });
+        if (ic.name === currentIcon) el.classList.add('active');
+        frag.appendChild(el);
+      }
+      grid.appendChild(frag);
+      count.textContent = matches.length > PAGE ? `${PAGE} of ${matches.length} shown — type to narrow down` : `${matches.length} icon${matches.length === 1 ? '' : 's'}`;
+    };
+    search.addEventListener('input', render);
+    document.body.appendChild(overlay);
+    render();
+    search.focus();
+  }
+
+  // Chip row: letters as plain chips, symbol slots as "+" (empty) or the icon (set).
+  let lastChipsKey = '';
+  function renderBlockChips(text: string, symbols: BlockSymbol[]) {
+    const chars = Array.from(text.replace(/[\r\n]+/g, ' ')).slice(0, MAX_BLOCKS);
+    const bySlot = new Map<number, string>();
+    for (const b of symbols) if (b.index >= 0 && b.index <= chars.length) bySlot.set(b.index, b.icon);
+    const key = JSON.stringify([chars, [...bySlot.entries()]]);
+    if (key === lastChipsKey) return;
+    lastChipsKey = key;
+    blockChips.innerHTML = '';
+    const slotEl = (i: number) => {
+      const icon = bySlot.get(i);
+      if (icon) {
+        const ic = LUCIDE_ICONS.find((x) => x.name === icon);
+        const el = document.createElement('button');
+        el.type = 'button';
+        el.className = 'block-chip symbol';
+        el.dataset.slot = String(i);
+        el.dataset.icon = icon;
+        el.title = `${icon} — click to change or remove`;
+        if (ic) {
+          const img = document.createElement('img');
+          img.src = svgDataUrl(buildSvg(ic.node));
+          img.alt = icon;
+          el.appendChild(img);
+        } else {
+          el.textContent = '?';
+        }
+        return el;
+      }
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'block-add';
+      add.dataset.slot = String(i);
+      add.title = 'Add a symbol block here';
+      add.setAttribute('aria-label', 'Add a symbol block here');
+      add.textContent = '+';
+      return add;
+    };
+    for (let i = 0; i <= chars.length; i++) {
+      blockChips.appendChild(slotEl(i));
+      if (i < chars.length) {
+        const chip = document.createElement('span');
+        chip.className = 'block-chip' + (chars[i].trim() ? '' : ' blank');
+        chip.textContent = chars[i].trim() ? chars[i] : '␣';
+        chip.title = chars[i].trim() ? `Block ${i + 1}` : 'Blank block (space)';
+        blockChips.appendChild(chip);
+      }
+    }
+    if (chars.length === 0) {
+      const hint = document.createElement('span');
+      hint.className = 'block-chips-empty';
+      hint.textContent = 'Type a word above.';
+      blockChips.appendChild(hint);
+    }
+  }
+
   // --- Size sliders ---
   const width = $<HTMLInputElement>('width');
   width.addEventListener('input', () => cb.onWidth(+width.value));
@@ -1127,6 +1327,8 @@ export function createUi(
   bindValInput('widthVal', width, cb.onWidth);
   bindValInput('topthickVal', topthick, cb.onTopThickness);
   bindValInput('imgdepthVal', imgdepth, cb.onImageDepth);
+  bindValInput('blocksLetterScaleVal', blocksLetterScale, (v) => cb.onBlocksLetterScale(v / 100));
+  bindValInput('blocksSizeVal', blocksSize, cb.onBlocksSize);
 
   // --- View tabs ---
   const viewTabs = $('viewTabs');
@@ -1837,6 +2039,27 @@ export function createUi(
     $('svgPanel').hidden = state.importMode !== 'svg';
     $('iconPanel').hidden = state.importMode !== 'icon';
     $('letterPanel').hidden = state.importMode !== 'text';
+    const isBlocks = state.importMode === 'blocks';
+    $('blocksPanel').hidden = !isBlocks;
+    // Blocks share the font list with Text mode: park the one font field in whichever
+    // panel is showing.
+    const fontField = $('fontField');
+    const fontHost = $(isBlocks ? 'blocksFontHost' : 'textFontHost');
+    if (fontField.parentElement !== fontHost) fontHost.appendChild(fontField);
+    // Blocks are always squares in a row/column with one switch each, so the shape/size
+    // and switch-placement sections don't apply; the Blocks section takes their place.
+    $('blocksSection').hidden = !isBlocks;
+    $('baseStyleSection').hidden = isBlocks;
+    $('sectionSwitch').hidden = isBlocks;
+    for (const b of blocksLayoutTabs.querySelectorAll<HTMLElement>('[data-layout]')) {
+      b.classList.toggle('active', b.dataset.layout === state.blocksLayout);
+    }
+    blocksLetterScale.value = String(Math.round(state.blocksLetterScale * 100));
+    setVal('blocksLetterScaleVal', Math.round(state.blocksLetterScale * 100) + '%');
+    blocksSize.value = String(state.blocksSize);
+    setVal('blocksSizeVal', state.blocksSize + ' mm');
+    if (document.activeElement !== blocksText && blocksText.value !== state.blocksText) blocksText.value = state.blocksText;
+    renderBlockChips(state.blocksText, state.blockSymbols);
 
     // Hide/show image specific fields in colors section
     const showSmoothingAndBg = state.importMode === 'image';

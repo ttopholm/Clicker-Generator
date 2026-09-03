@@ -10,6 +10,7 @@ import { parseSvg } from './image/logo';
 import { SAMPLES, SVG_SAMPLES } from './image/sample';
 import { parseLetter, importFontFile } from './image/letter';
 import { LUCIDE_ICONS, buildSvg } from './image/lucideIcons';
+import { BLOCKS_MARGIN_MM, BLOCKS_WALL_MM, blockItems, blocksPitch, placeBlocks, traceBlocks } from './image/blocks';
 import type {
   BuildParams,
   BuildRegion,
@@ -20,6 +21,7 @@ import type {
   RegionSet,
   RGB,
   SwitchPlacement,
+  BuildCell,
 } from './types';
 import { FILAMENTS } from './types';
 
@@ -70,6 +72,11 @@ const store = createStore<UiState>({
   view: 'exploded',
   showSwitch: true,
   importMode: 'image', // Land on the Image tab by default
+  blocksText: 'Name',
+  blockSymbols: [],
+  blocksLayout: 'horizontal',
+  blocksLetterScale: 1,
+  blocksSize: 22,
   currentIconName: 'circle',
   colorMode: 'normal',
   limitedColors: [],
@@ -106,6 +113,8 @@ let currentSvgName = '';
 let currentIconText = '';
 let currentIconName = '';
 let currentText = 'Custom\nText';
+// Blocks mode: traced glyph cells (at the origin) from the last reprocess; positioned in rebuild.
+let blockCells: BuildCell[] = [];
 let currentFontId = 'helvetiker-regular';
 let isInitialLoad = true;
 
@@ -340,7 +349,34 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
   },
   onFontSelect: (fontId) => {
     currentFontId = fontId;
-    store.set({ status: 'Font changed. Click Generate to update.' });
+    if (store.get().importMode === 'blocks') {
+      reprocess(); // blocks update live — no Generate step
+    } else {
+      store.set({ status: 'Font changed. Click Generate to update.' });
+    }
+  },
+  // Blocks mode edits apply live: text, symbols and sizes re-trace the glyphs; the
+  // layout only moves the cells, so it is a plain rebuild.
+  onBlocksText: (text) => {
+    store.set({ blocksText: text });
+    debouncedReprocess();
+  },
+  onBlockSymbol: (index, icon) => {
+    const rest = store.get().blockSymbols.filter((b) => b.index !== index);
+    store.set({ blockSymbols: icon ? [...rest, { index, icon }] : rest });
+    reprocess();
+  },
+  onBlocksLayout: (layout) => {
+    store.set({ blocksLayout: layout });
+    debouncedRebuild();
+  },
+  onBlocksLetterScale: (v) => {
+    store.set({ blocksLetterScale: Math.max(0.3, Math.min(1.5, v)) });
+    debouncedReprocess();
+  },
+  onBlocksSize: (mm) => {
+    store.set({ blocksSize: Math.max(20, Math.min(40, mm)) });
+    debouncedReprocess();
   },
   onImportFont: async (file) => {
     try {
@@ -442,7 +478,7 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
 // (reprocess) starts a fresh baseline. Restoring rebuilds the geometry.
 const HISTORY_FIELDS = [
   'palette', 'paletteOverrides', 'partOverrides', 'bodyColorRgb', 'baseColorOverride',
-  'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'baseDepth', 'capWidthMm', 'topThickness',
+  'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'baseDepth', 'blocksLayout', 'capWidthMm', 'topThickness',
   'imageDepth', 'tolerance', 'stemTolerance', 'switches', 'keychain',
 ] as const;
 let history: string[] = [];
@@ -901,6 +937,28 @@ function reprocess() {
       store.set({ building: false, status: 'Error: ' + e.message });
       return;
     }
+  } else if (s.importMode === 'blocks') {
+    const items = blockItems(s.blocksText, s.blockSymbols);
+    if (items.length === 0) {
+      regionSet = null;
+      blockCells = [];
+      store.set({ building: false, status: 'Type a word for the blocks first.' });
+      return;
+    }
+    try {
+      store.set({ building: true, status: 'Laying out blocks…' });
+      const traced = traceBlocks(items, {
+        fontId: currentFontId,
+        size: s.blocksSize,
+        letterScale: s.blocksLetterScale,
+        margin: BLOCKS_MARGIN_MM,
+      });
+      blockCells = traced.cells;
+      regionSet = traced.regionSet;
+    } catch (e: any) {
+      store.set({ building: false, status: 'Error: ' + e.message });
+      return;
+    }
   }
 
   if (!regionSet) return;
@@ -927,8 +985,9 @@ function rebuild(quiet = false) {
   }
   const s = store.get();
 
+  const isBlocks = s.importMode === 'blocks';
   const regions: BuildRegion[] = [];
-  regionSet.regions.forEach((r, i) => {
+  if (!isBlocks) regionSet.regions.forEach((r, i) => {
     const baseColor = s.palette[i]?.filamentRgb ?? r.quantRgb;
     r.components.forEach((comp, j) => {
       const partName = `top-color-${i}-${j}`;
@@ -952,13 +1011,13 @@ function rebuild(quiet = false) {
 
   const isText = s.importMode === 'text';
   const params: BuildParams = {
-    baseShape: effectiveBaseShape,
+    baseShape: isBlocks ? 'square' : effectiveBaseShape,
     baseDepth: s.baseDepth,
     capWidthMm: s.capWidthMm,
     topThickness: Math.max(1, s.topThickness),
     imageDepth: s.imageDepth,
-    imageMargin: isText ? 2.5 : 1.2,
-    borderWidth: isText ? 3.5 : 2.6,
+    imageMargin: isBlocks ? BLOCKS_MARGIN_MM : isText ? 2.5 : 1.2,
+    borderWidth: isBlocks ? BLOCKS_WALL_MM : isText ? 3.5 : 2.6,
     capProud: 4.0,
     tolerance: s.tolerance,
     stemTolerance: s.stemTolerance,
@@ -974,6 +1033,21 @@ function rebuild(quiet = false) {
     extrudeChamfer: s.extrudeChamfer,
     componentHeights: s.componentHeights,
   };
+  if (isBlocks) {
+    // Position the traced cells for the current layout/tolerance and resolve each
+    // block's letter colour (a clicked-on override wins over the palette filament).
+    const cells = placeBlocks(blockCells, s.blocksLayout, blocksPitch(s.blocksSize, s.tolerance));
+    params.blocks = {
+      size: s.blocksSize,
+      cells: cells.map((c) => ({
+        ...c,
+        regions: c.regions.map((r) => ({
+          ...r,
+          filamentRgb: s.partOverrides?.[r.partName] ?? s.palette[0]?.filamentRgb ?? r.filamentRgb,
+        })),
+      })),
+    };
+  }
 
   if (quiet) {
     // Live edit preview (extrude / edges): rebuild silently — no full-screen overlay.
@@ -1141,6 +1215,11 @@ function saveProject() {
       smoothing: s.smoothing,
       removeBg: s.removeBg,
       importMode: s.importMode,
+      blocksText: s.blocksText,
+      blockSymbols: s.blockSymbols,
+      blocksLayout: s.blocksLayout,
+      blocksLetterScale: s.blocksLetterScale,
+      blocksSize: s.blocksSize,
       currentText,
       currentFontId,
       currentSvgText,
@@ -1184,6 +1263,13 @@ async function loadProject(file: File) {
 
     store.set({
       importMode: set.importMode ?? 'image',
+      blocksText: typeof set.blocksText === 'string' ? set.blocksText : 'Name',
+      blockSymbols: Array.isArray(set.blockSymbols)
+        ? set.blockSymbols.filter((b: any) => b && Number.isInteger(b.index) && typeof b.icon === 'string')
+        : [],
+      blocksLayout: set.blocksLayout === 'vertical' ? 'vertical' : 'horizontal',
+      blocksLetterScale: typeof set.blocksLetterScale === 'number' ? set.blocksLetterScale : 1,
+      blocksSize: typeof set.blocksSize === 'number' ? set.blocksSize : 22,
       colorCount: set.colorCount ?? store.get().colorCount,
       baseShape: set.baseShape ?? store.get().baseShape,
       baseDepth: set.baseDepth === 'deep' ? 'deep' : 'standard',
