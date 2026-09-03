@@ -7,7 +7,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY . .
-# Optional build-time settings (same names as the GitHub Pages workflow):
+# Optional build-time settings (same names as in netlify.toml):
 #   VITE_MARK_SEED  covert model-identity seed; empty = no secret mark (dev behaviour)
 #   VITE_BUILD_ID   provenance string written into exported 3MF metadata
 ARG VITE_MARK_SEED=

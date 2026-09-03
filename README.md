@@ -1,6 +1,6 @@
 # Clicker Generator
 
-Browser-based generator that turns an image into a print-ready **3MF** of a multicolor "clicker" — a 3D-printed pressable button built around a real **Cherry MX** mechanical switch. 100% client-side, deployed on GitHub Pages (no backend, no hosting cost).
+Browser-based generator that turns an image into a print-ready **3MF** of a multicolor "clicker" — a 3D-printed pressable button built around a real **Cherry MX** mechanical switch. 100% client-side (no backend).
 
 **Live site:** https://vostoklabs.github.io/Clicker-Generator/
 
@@ -126,10 +126,4 @@ The repo carries a `netlify.toml` and an edge function that puts HTTP Basic Auth
 2. Under **Site configuration → Environment variables** add `BASIC_AUTH_USER` and `BASIC_AUTH_PASSWORD`. Until both exist the site answers 503 instead of opening up.
 3. Deploy. The browser asks for the username and password once per session.
 
-Optional: add `VITE_MARK_SEED` there too to bake the covert identity mark into exported models, as the GitHub Pages workflow does.
-
-## Deploy
-
-Pushing to `main` triggers [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml), which builds the static site and publishes `dist/` to GitHub Pages.
-
-One-time setup: in the repo, go to **Settings → Pages → Source** and select **GitHub Actions**. `vite.config.ts` uses `base: './'` (relative paths) so the build works at any Pages URL without reconfiguration.
+Optional: add `VITE_MARK_SEED` there too to bake the covert identity mark into exported models.

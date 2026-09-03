@@ -5,7 +5,7 @@
 # set BASIC_AUTH_USER and BASIC_AUTH_PASSWORD under Site configuration →
 # Environment variables, otherwise the site answers 503 instead of going public.
 #
-# Optional build-time variables (same names as the GitHub Pages workflow):
+# Optional build-time variables (same names as the Docker build args):
 #   VITE_MARK_SEED   covert model-identity seed; unset = no secret mark
 
 [build]
