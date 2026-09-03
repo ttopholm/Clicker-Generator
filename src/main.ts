@@ -1,5 +1,6 @@
 import './style.css';
 import { createStore } from './store/store';
+import { deflateSync, inflateSync, strFromU8, strToU8 } from 'fflate';
 import { createViewer } from './viewer/viewer';
 import { createUi, type MaterialEstimate, type UiState } from './ui/ui';
 import { loadFileToImage, type RgbaImage } from './image/decode';
@@ -355,6 +356,7 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
   onSaveProject: () => saveProject(),
   onLoadProject: (file) => loadProject(file),
   onNewDesign: () => newDesign(),
+  onCopyLink: () => copyShareLink(),
   onBodyColor: (hex) => {
     // Live recolor of the clicker body — no rebuild (geometry is unchanged).
     const idx = latestParts.findIndex((p) => p.name === 'base-body');
@@ -825,10 +827,13 @@ worker.onmessage = (e: MessageEvent<GeometryResponse>) => {
         }
       }
       if (isInitialLoad) {
-        restoreAutosave().then((restored) => {
-          if (!restored) loadDefaultClicker();
-          autosaveArmed = true;
-        });
+        // A shared link wins over the autosave; the autosave over the default clicker.
+        loadSharedDesign()
+          .then((loaded) => loaded || restoreAutosave())
+          .then((restored) => {
+            if (!restored) loadDefaultClicker();
+            autosaveArmed = true;
+          });
       } else {
         reprocess();
       }
@@ -1677,6 +1682,82 @@ async function restoreAutosave(): Promise<boolean> {
   }
 }
 
+// ---- Shareable links: the design's settings (never the image) deflated + base64url
+//      in the URL hash, so a text / icon / emoji / blocks design can be sent as a link
+//      with no server involved. ----
+const SHARE_PARAM = 'd=';
+/** Keep links pasteable into chat apps; an SVG design can exceed this. */
+const SHARE_MAX_CHARS = 8000;
+
+function toBase64Url(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function fromBase64Url(s: string): Uint8Array {
+  const b64 = s.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - (s.length % 4)) % 4);
+  const bin = atob(b64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function buildShareUrl(): { url: string } | { error: string } {
+  const s = store.get();
+  if (s.importMode === 'image') {
+    return { error: 'Links cannot carry an uploaded image — use Save project for image designs.' };
+  }
+  const { image: _img, ...proj } = buildProject();
+  const bytes = deflateSync(strToU8(JSON.stringify({ ...proj, image: null })), { level: 9 });
+  const url = `${location.origin}${location.pathname}#${SHARE_PARAM}${toBase64Url(bytes)}`;
+  if (url.length > SHARE_MAX_CHARS) return { error: 'This design is too detailed for a link — use Save project instead.' };
+  return { url };
+}
+
+async function copyShareLink() {
+  const r = buildShareUrl();
+  if ('error' in r) {
+    store.set({ status: r.error });
+    return;
+  }
+  // Put it in the address bar too, so it can be copied by hand or bookmarked.
+  window.history.replaceState(null, '', r.url);
+  try {
+    await navigator.clipboard.writeText(r.url);
+    store.set({ status: 'Link copied — anyone opening it gets this design ✓' });
+  } catch {
+    store.set({ status: 'Link is in the address bar — copy it from there.' });
+  }
+}
+
+function readSharedFromUrl(): ProjectFile | null {
+  const h = location.hash.startsWith('#') ? location.hash.slice(1) : location.hash;
+  if (!h.startsWith(SHARE_PARAM)) return null;
+  try {
+    const proj = JSON.parse(strFromU8(inflateSync(fromBase64Url(h.slice(SHARE_PARAM.length)))));
+    if (!proj || typeof proj !== 'object' || !proj.settings || proj.settings.importMode === 'image') return null;
+    return proj as ProjectFile;
+  } catch {
+    return null;
+  }
+}
+
+/** Apply a design carried in the URL; returns false when there is none (or it is bad). */
+async function loadSharedDesign(): Promise<boolean> {
+  const proj = readSharedFromUrl();
+  if (!proj) return false;
+  try {
+    store.set({ building: true, status: 'Loading the shared design…' });
+    statusAfterBuild = { text: 'Loaded the design from the link.', until: Date.now() + 8000 };
+    await applyProject(proj);
+    return true;
+  } catch (err) {
+    console.warn('Could not load the shared design', err);
+    store.set({ building: false, status: 'Could not read the design in this link.' });
+    return false;
+  }
+}
+
 /** Forget the autosaved design and start over with the default clicker. */
 function newDesign() {
   try {
@@ -1685,6 +1766,8 @@ function newDesign() {
     /* ignore */
   }
   autosaveArmed = false;
+  // Drop any shared-design hash so the reload really starts fresh.
+  window.history.replaceState(null, '', location.pathname + location.search);
   location.reload();
 }
 

@@ -161,6 +161,8 @@ export interface UiCallbacks {
   onLoadProject(file: File): void;
   /** Forget the autosaved design and start over. */
   onNewDesign(): void;
+  /** Put the design (settings, no image) in the URL and copy it to the clipboard. */
+  onCopyLink(): void;
   onBodyColor(hex: string): void;
 
   // New callbacks for vector modes
@@ -795,7 +797,10 @@ export function createUi(
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
             <span>New design</span>
           </button>
-          <span class="autosave-note">Autosaved in this browser</span>
+          <button id="copyLink" class="secondary utility-btn" type="button" aria-label="Copy a link to this design" title="Copies a link that opens this exact design (text, icon, emoji, SVG and block designs — not uploaded images). Your design is also autosaved in this browser.">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            <span>Copy link</span>
+          </button>
         </div>
         <div class="btn-row footer-utility-row">
           <button id="helpToggle" class="secondary utility-btn" type="button" aria-label="Show intro and help">
@@ -1581,6 +1586,7 @@ export function createUi(
   $('exportStl').addEventListener('click', () => cb.onExportStl());
   // render PNG and AI prompt buttons removed per design
   $('saveProj').addEventListener('click', () => cb.onSaveProject());
+  $('copyLink').addEventListener('click', () => cb.onCopyLink());
   $('newProj').addEventListener('click', () => {
     if (confirm('Start a new design? The design saved in this browser will be cleared.')) cb.onNewDesign();
   });
@@ -2376,6 +2382,8 @@ export function createUi(
 
     const exportBtn = $<HTMLButtonElement>('export');
     exportBtn.disabled = !state.hasParts || state.building;
+    // Links carry settings only, so an uploaded image cannot travel in one.
+    $<HTMLButtonElement>('copyLink').disabled = state.importMode === 'image';
     $<HTMLButtonElement>('exportStl').disabled = exportBtn.disabled;
 
     // Rough material + time estimate for the current parts.
