@@ -24,6 +24,7 @@ import type {
   RGB,
   SwitchPlacement,
   BuildCell,
+  PartGroup,
 } from './types';
 import { DEEP_BASE_EXTRA_MM, DEFAULT_MAGNETS, FILAMENTS, PRINT_PLATES } from './types';
 
@@ -33,6 +34,10 @@ const assetsPromise = Promise.all([
   fetch(base + 'assets/switch/mx/mx-socket.3mf').then((r) => r.arrayBuffer()),
   fetch(base + 'assets/switch/mx/mx-stem.3mf').then((r) => r.arrayBuffer()),
   fetch(base + 'assets/switch/mx/mx-switch.3mf').then((r) => r.arrayBuffer()),
+  // Optional: the soda-can body shape. A failed fetch only disables that shape.
+  fetch(base + 'assets/shapes/can-body.3mf').then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null),
+  fetch(base + 'assets/shapes/can-lid.3mf').then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null),
+  fetch(base + 'assets/shapes/can-foot.3mf').then((r) => (r.ok ? r.arrayBuffer() : null)).catch(() => null),
 ]).catch((err) => {
   console.error('[assets] Pre-fetch failed:', err);
   throw err;
@@ -881,8 +886,12 @@ worker.onerror = (e) => {
 
 async function initAssets() {
   try {
-    const [socket, stem, sw] = await assetsPromise;
-    worker.postMessage({ type: 'init', socket, stem, switch: sw }, [socket, stem, sw]);
+    const [socket, stem, sw, canBody, canLid, canFoot] = await assetsPromise;
+    const extras = [canBody, canLid, canFoot].filter((b): b is ArrayBuffer => !!b);
+    worker.postMessage(
+      { type: 'init', socket, stem, switch: sw, canBody: canBody ?? undefined, canLid: canLid ?? undefined, canFoot: canFoot ?? undefined },
+      [socket, stem, sw, ...extras],
+    );
   } catch (err) {
     store.set({ status: 'Failed to load switch assets: ' + String(err) });
     isInitialLoad = false;
@@ -1196,7 +1205,7 @@ function currentPlate() {
 
 /** The exported print layout: base and top side by side, so both must fit at once. */
 function printLayoutSize(parts: ClickerPart[]): { w: number; d: number } | null {
-  const bb = (group: 'top' | 'base') => {
+  const bb = (group: PartGroup) => {
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
     for (const p of parts) {
       if (p.group !== group) continue;
@@ -1210,11 +1219,10 @@ function printLayoutSize(parts: ClickerPart[]): { w: number; d: number } | null 
     }
     return isFinite(minX) ? { w: maxX - minX, d: maxY - minY } : null;
   };
-  const base = bb('base');
-  const top = bb('top');
-  if (!base && !top) return null;
-  const w = (base?.w ?? 0) + (top?.w ?? 0) + (base && top ? PLATE_LAYOUT_GAP_MM : 0);
-  const d = Math.max(base?.d ?? 0, top?.d ?? 0);
+  const boxes = [bb('base'), bb('top'), bb('foot')].filter((b): b is { w: number; d: number } => !!b);
+  if (!boxes.length) return null;
+  const w = boxes.reduce((sum, b) => sum + b.w, 0) + (boxes.length - 1) * PLATE_LAYOUT_GAP_MM;
+  const d = Math.max(...boxes.map((b) => b.d));
   return { w, d };
 }
 

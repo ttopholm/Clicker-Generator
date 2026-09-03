@@ -20,6 +20,7 @@
 import type { BuildParams, BuildRegion, ClickerPart, EdgeSetting, EdgeStyle, PartGroup, Ring, RGB, SwitchPlacement } from '../types';
 import { DEEP_BASE_EXTRA_MM } from '../types';
 import { getMarkSeed, markVoids, hardcodedVoids } from './identityMark';
+import { buildCan } from './buildCan';
 
 type Wasm = any;
 type Solid = any;
@@ -32,7 +33,13 @@ export function buildClicker(
   regions: BuildRegion[],
   outline: Ring[],
   params: BuildParams,
+  extras: { canBody?: Solid; canLid?: Solid; canFoot?: Solid } = {},
 ): { parts: ClickerPart[]; switchPlacements: SwitchPlacement[]; warnings: string[] } {
+  // The soda can is a different construction (design on the side, lid in the collar).
+  if (params.baseShape === 'can' && !params.blocks?.cells.length) {
+    if (!extras.canBody) throw new Error('The soda-can shape did not load — reload the page or pick another shape.');
+    return buildCan(wasm, extras.canBody, stem, regions, outline, params, extras.canLid ?? null, extras.canFoot ?? null);
+  }
   const { Manifold, CrossSection } = wasm;
   const trash: { delete(): void }[] = [];
   const track = <T extends { delete(): void }>(o: T): T => {

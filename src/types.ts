@@ -41,7 +41,7 @@ export interface PaletteEntry {
   coverage: number; // fraction of foreground pixels
 }
 
-export type BaseShapeKind = 'outline' | 'circle' | 'square' | 'hexagon' | 'heart' | 'star' | 'egg';
+export type BaseShapeKind = 'outline' | 'circle' | 'square' | 'hexagon' | 'heart' | 'star' | 'egg' | 'can';
 
 /** Body depth below the switch plate. 'standard' is the regular base; 'deep' adds
  *  DEEP_BASE_EXTRA_MM under the switch socket and carries the socket cavity straight
@@ -232,7 +232,8 @@ export interface MeshData {
 
 export type PartKind = 'cap' | 'body';
 /** Which independently-movable object a part belongs to in the export. */
-export type PartGroup = 'top' | 'base';
+/** 'foot' is a third printable object (the soda can's glue-on bottom), printed face down. */
+export type PartGroup = 'top' | 'base' | 'foot';
 
 export interface ClickerPart extends MeshData {
   kind: PartKind;
@@ -256,7 +257,7 @@ export interface BuildRegion {
 
 // ---- Worker messages ----
 export type GeometryRequest =
-  | { type: 'init'; socket: ArrayBuffer; stem: ArrayBuffer; switch: ArrayBuffer }
+  | { type: 'init'; socket: ArrayBuffer; stem: ArrayBuffer; switch: ArrayBuffer; canBody?: ArrayBuffer; canLid?: ArrayBuffer; canFoot?: ArrayBuffer }
   | {
       type: 'buildClicker';
       regions: BuildRegion[];

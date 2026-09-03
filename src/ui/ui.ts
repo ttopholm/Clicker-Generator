@@ -293,7 +293,7 @@ export function createUi(
         </div>
       </div>
       <div class="field" id="shapeSelectField" style="margin-bottom: 12px;">
-        <label for="shapeSelect">Shape geometry ${tip('The preset base shape used when the Shape base style is selected.')}</label>
+        <label for="shapeSelect">Shape geometry ${tip('The preset base shape used when the Shape base style is selected. Soda can wraps the design around the side of a can-shaped body with the switch inside and a lid on top; Size then sets how wide the design is around the can.')}</label>
         <select id="shapeSelect">
           <option value="circle">Circle</option>
           <option value="square">Square</option>
@@ -301,6 +301,7 @@ export function createUi(
           <option value="heart">Heart</option>
           <option value="star">Star</option>
           <option value="egg">Egg</option>
+          <option value="can">Soda can (design on the side)</option>
         </select>
       </div>
       <div class="prow-stacked">
@@ -2320,7 +2321,7 @@ export function createUi(
     // and switch-placement sections don't apply; the Blocks section takes their place.
     $('blocksSection').hidden = !isBlocks;
     $('baseStyleSection').hidden = isBlocks;
-    $('sectionSwitch').hidden = isBlocks;
+    $('sectionSwitch').hidden = isBlocks || state.baseShape === 'can';
     for (const b of blocksLayoutTabs.querySelectorAll<HTMLElement>('[data-layout]')) {
       b.classList.toggle('active', b.dataset.layout === state.blocksLayout);
     }
@@ -2373,6 +2374,10 @@ export function createUi(
     }
     // .prow-stacked sets display: grid, which beats the `hidden` attribute — toggle display.
     $('deepExtraRow').style.display = state.baseDepth === 'deep' ? '' : 'none';
+    // The can body is a fixed model: no base height and no switch placement.
+    const isCan = state.baseShape === 'can' && !isBlocks;
+    $('baseDepthField').hidden = isCan;
+    if (isCan) $('deepExtraRow').style.display = 'none';
     deepExtra.value = String(state.deepExtraMm);
     setVal('deepExtraVal', state.deepExtraMm.toFixed(2).replace(/\.?0+$/, '') + ' mm');
 
