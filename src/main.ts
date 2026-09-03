@@ -86,6 +86,7 @@ const store = createStore<UiState>({
   blocksLayout: 'horizontal',
   blocksLetterScale: 1,
   blocksSize: 22,
+  blocksGap: BLOCKS_WALL_MM,
   currentIconName: 'circle',
   colorMode: 'normal',
   limitedColors: [],
@@ -423,6 +424,11 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
     store.set({ blocksSize: Math.max(20, Math.min(40, mm)) });
     debouncedReprocess();
   },
+  onBlocksGap: (mm) => {
+    // Wall between blocks: positions only, so a rebuild (no re-trace) is enough.
+    store.set({ blocksGap: Math.round(Math.max(1.2, Math.min(8, mm)) * 10) / 10 });
+    debouncedRebuild();
+  },
   onImportFont: async (file) => {
     try {
       store.set({ building: true, status: 'Importing font…' });
@@ -523,10 +529,9 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
 // (reprocess) starts a fresh baseline. Restoring rebuilds the geometry.
 const HISTORY_FIELDS = [
   'palette', 'paletteOverrides', 'partOverrides', 'bodyColorRgb', 'baseColorOverride',
-  'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'baseDepth', 'blocksLayout', 'capWidthMm', 'topThickness',
-  'imageDepth', 'tolerance', 'stemTolerance', 'switches', 'keychain', 'magnets',
-  'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'baseDepth', 'deepExtraMm', 'blocksLayout', 'capWidthMm', 'topThickness',
-  'imageDepth', 'tolerance', 'stemTolerance', 'switches', 'keychain',
+  'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'baseDepth', 'blocksLayout',
+  'blocksGap', 'capWidthMm', 'topThickness', 'imageDepth', 'tolerance', 'stemTolerance',
+  'switches', 'keychain', 'magnets', 'deepExtraMm',
 ] as const;
 let history: string[] = [];
 let histIndex = -1;
@@ -1075,7 +1080,7 @@ function rebuild(quiet = false) {
     topThickness: Math.max(1, s.topThickness),
     imageDepth: s.imageDepth,
     imageMargin: isBlocks ? BLOCKS_MARGIN_MM : isText ? 2.5 : 1.2,
-    borderWidth: isBlocks ? BLOCKS_WALL_MM : isText ? 3.5 : 2.6,
+    borderWidth: isBlocks ? Math.max(1.2, s.blocksGap) : isText ? 3.5 : 2.6,
     capProud: 4.0,
     tolerance: s.tolerance,
     stemTolerance: s.stemTolerance,
@@ -1095,7 +1100,7 @@ function rebuild(quiet = false) {
   if (isBlocks) {
     // Position the traced cells for the current layout/tolerance and resolve each
     // block's letter colour (a clicked-on override wins over the palette filament).
-    const cells = placeBlocks(blockCells, s.blocksLayout, blocksPitch(s.blocksSize, s.tolerance));
+    const cells = placeBlocks(blockCells, s.blocksLayout, blocksPitch(s.blocksSize, s.tolerance, s.blocksGap));
     params.blocks = {
       size: s.blocksSize,
       cells: cells.map((c) => ({
@@ -1399,6 +1404,7 @@ function buildProject(): ProjectFile {
       blocksLayout: s.blocksLayout,
       blocksLetterScale: s.blocksLetterScale,
       blocksSize: s.blocksSize,
+      blocksGap: s.blocksGap,
       currentText,
       currentFontId,
       currentSvgText,
@@ -1542,6 +1548,7 @@ async function loadProject(file: File) {
       blocksLayout: set.blocksLayout === 'vertical' ? 'vertical' : 'horizontal',
       blocksLetterScale: typeof set.blocksLetterScale === 'number' ? set.blocksLetterScale : 1,
       blocksSize: typeof set.blocksSize === 'number' ? set.blocksSize : 22,
+      blocksGap: typeof set.blocksGap === 'number' ? set.blocksGap : BLOCKS_WALL_MM,
       colorCount: set.colorCount ?? store.get().colorCount,
       baseShape: set.baseShape ?? store.get().baseShape,
       baseDepth: set.baseDepth === 'deep' ? 'deep' : 'standard',

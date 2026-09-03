@@ -65,6 +65,8 @@ export interface UiState {
   blocksLetterScale: number;
   /** Block (keycap) side length, mm. */
   blocksSize: number;
+  /** Wall between neighbouring blocks (and the outer border), mm. */
+  blocksGap: number;
   currentIconName: string;
   colorMode: 'normal' | 'limited';
   limitedColors: RGB[];
@@ -163,6 +165,7 @@ export interface UiCallbacks {
   onBlocksLayout(layout: BlocksLayout): void;
   onBlocksLetterScale(scale: number): void;
   onBlocksSize(mm: number): void;
+  onBlocksGap(mm: number): void;
   onSvgUpload(file: File): void;
   onSelectSvg(svgText: string, name: string): void;
   onSelectIcon(svgText: string, name: string): void;
@@ -334,6 +337,13 @@ export function createUi(
           <input type="text" class="val" id="blocksSizeVal" />
         </div>
         <input type="range" id="blocksSize" min="20" max="40" step="1" />
+      </div>
+      <div class="prow-stacked">
+        <div class="prow-header">
+          <label for="blocksGap">Block spacing ${tip('Thickness of the wall between neighbouring blocks (and the outer rim), in mm. Thinner packs the word tighter; thicker spaces the blocks out.')}</label>
+          <input type="text" class="val" id="blocksGapVal" />
+        </div>
+        <input type="range" id="blocksGap" min="1.2" max="8" step="0.2" />
       </div>
     </div>
 
@@ -1204,6 +1214,8 @@ export function createUi(
   blocksLetterScale.addEventListener('input', () => cb.onBlocksLetterScale(+blocksLetterScale.value / 100));
   const blocksSize = $<HTMLInputElement>('blocksSize');
   blocksSize.addEventListener('input', () => cb.onBlocksSize(+blocksSize.value));
+  const blocksGap = $<HTMLInputElement>('blocksGap');
+  blocksGap.addEventListener('input', () => cb.onBlocksGap(+blocksGap.value));
   const blockChips = $('blockChips');
   let chipSymbols: BlockSymbol[] = []; // the list the chip row was rendered from
   blockChips.addEventListener('click', (e) => {
@@ -1502,6 +1514,7 @@ export function createUi(
   bindValInput('deepExtraVal', deepExtra, cb.onDeepExtra);
   bindValInput('blocksLetterScaleVal', blocksLetterScale, (v) => cb.onBlocksLetterScale(v / 100));
   bindValInput('blocksSizeVal', blocksSize, cb.onBlocksSize);
+  bindValInput('blocksGapVal', blocksGap, cb.onBlocksGap);
 
   // --- View tabs ---
   const viewTabs = $('viewTabs');
@@ -2255,6 +2268,8 @@ export function createUi(
     setVal('blocksLetterScaleVal', Math.round(state.blocksLetterScale * 100) + '%');
     blocksSize.value = String(state.blocksSize);
     setVal('blocksSizeVal', state.blocksSize + ' mm');
+    blocksGap.value = String(state.blocksGap);
+    setVal('blocksGapVal', state.blocksGap.toFixed(1) + ' mm');
     if (document.activeElement !== blocksText && blocksText.value !== state.blocksText) blocksText.value = state.blocksText;
     renderBlockChips(state.blocksText, state.blockSymbols);
 
