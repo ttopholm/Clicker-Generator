@@ -619,7 +619,6 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
-store.subscribe(() => debouncedAutosave());
 store.subscribe((s) => {
   ui.update(s);
 
@@ -1651,6 +1650,9 @@ function autosaveNow() {
   }
 }
 const debouncedAutosave = debounce(autosaveNow, 800);
+// Registered here, after the definition: a store.set() during start-up (e.g. the print
+// plate check) must not hit this subscriber before `debouncedAutosave` exists.
+store.subscribe(() => debouncedAutosave());
 
 function readAutosave(): ProjectFile | null {
   try {
