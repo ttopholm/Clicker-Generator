@@ -15,8 +15,9 @@ export const BLOCKS_WALL_MM = 2.6;
 export const BLOCKS_MARGIN_MM = 1.5;
 
 /** Centre-to-centre block distance for a cap size and top↔base tolerance. */
-export const blocksPitch = (sizeMm: number, toleranceMm: number): number =>
-  sizeMm + 2 * toleranceMm + BLOCKS_WALL_MM;
+/** Centre-to-centre distance: cap + slip fit on both sides + the wall between blocks. */
+export const blocksPitch = (sizeMm: number, toleranceMm: number, wallMm = BLOCKS_WALL_MM): number =>
+  sizeMm + 2 * toleranceMm + Math.max(0.8, wallMm);
 
 /** What a symbol block shows: a Lucide icon by name, or an emoji character. */
 export type SymbolSpec = { icon: string; emoji?: undefined } | { emoji: string; icon?: undefined };
@@ -292,11 +293,33 @@ export function traceBlocks(items: BlockItem[], opts: BlocksGlyphOptions): Block
 }
 
 /** Position traced cells in a centred row (first block left) or column (first block top). */
-export function placeBlocks(cells: BuildCell[], layout: BlocksLayout, pitch: number): BuildCell[] {
-  const n = cells.length;
-  return cells.map((c, i) => ({
-    ...c,
-    x: layout === 'horizontal' ? (i - (n - 1) / 2) * pitch : 0,
-    y: layout === 'horizontal' ? 0 : ((n - 1) / 2 - i) * pitch,
-  }));
+export function placeBlocks(cells: BuildCell[], layout: BlocksLayout, pitch: number, perLine = 0): BuildCell[] {
+  // Split into lines of at most `perLine` blocks (0 = everything on one line). A blank
+  // block (a space) that would start a new line is dropped, so "HELLO WORLD" wraps as
+  // HELLO / WORLD instead of carrying the space over.
+  const lines: BuildCell[][] = [[]];
+  for (const c of cells) {
+    let line = lines[lines.length - 1];
+    if (perLine > 0 && line.length >= perLine) {
+      if (!c.regions.length) continue; // leading blank on the next line
+      line = [];
+      lines.push(line);
+    }
+    line.push(c);
+  }
+  const L = lines.length;
+  const out: BuildCell[] = [];
+  lines.forEach((line, j) => {
+    const n = line.length;
+    line.forEach((c, i) => {
+      const along = (i - (n - 1) / 2) * pitch; // centred along the line
+      const across = ((L - 1) / 2 - j) * pitch; // first line on top / left
+      out.push({
+        ...c,
+        x: layout === 'horizontal' ? along : -across,
+        y: layout === 'horizontal' ? across : -along,
+      });
+    });
+  });
+  return out;
 }
