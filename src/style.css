@@ -2155,3 +2155,6 @@ button.fil-chip:active {
   text-transform: uppercase;
   margin-top: 4px;
 }
+
+/* Emoji import card icon */
+.import-card .card-icon-emoji { font-size: 17px; line-height: 1; }

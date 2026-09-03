@@ -55,7 +55,7 @@ export const DEEP_BASE_EXTRA_MM = 5.17;
 export type ViewMode = 'assembled' | 'exploded' | 'section';
 
 /** Where the design comes from (the right-hand Import Source tabs). */
-export type ImportMode = 'image' | 'svg' | 'icon' | 'text' | 'blocks';
+export type ImportMode = 'image' | 'svg' | 'icon' | 'text' | 'blocks' | 'emoji';
 
 /** Which interaction mode the viewport is in. */
 export type EditMode = 'color' | 'extrude' | 'edges';
