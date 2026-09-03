@@ -8,9 +8,6 @@ import { FONT_OPTIONS, loadBundledFonts } from '../image/letter';
 import { LUCIDE_ICONS, buildSvg, svgDataUrl } from '../image/lucideIcons';
 import { MAX_BLOCKS, blockChars, insertSymbol, looksLikeEmoji, replaceSymbol, type BlockSymbol, type SymbolSpec } from '../image/blocks';
 
-/** Base path for bundled public assets (favicon logos, etc.). */
-const ASSET_BASE = import.meta.env.BASE_URL;
-
 /** Neutral top↔base clearance (mm). The "Switch socket tolerance" stepper shows the
  *  offset from this baseline, so a fresh design reads 0. Keep in sync with the store default. */
 const BASE_SOCKET_TOL = 0.4;
@@ -219,13 +216,6 @@ export function createUi(
     <div class="app-header">
       <h1>Clicker Generator</h1>
       <p class="app-subtitle">Generate printable 3D model of a clicker from an image</p>
-      <p class="app-credit">Made by
-        <a class="app-credit-link" href="https://makerworld.com/en/@Vostok_Labs" target="_blank" rel="noopener noreferrer">
-          <img class="credit-logo only-dark" src="${ASSET_BASE}assets/favicon/vostokfaviconwhite.png" alt="" aria-hidden="true" />
-          <img class="credit-logo only-light" src="${ASSET_BASE}assets/favicon/Vostokfaviconblack.png" alt="" aria-hidden="true" />
-          Vostok Labs
-        </a>
-      </p>
     </div>
 
     <div class="section" id="previewViewSection">
