@@ -915,11 +915,21 @@ export function buildClicker(
     name: string,
   ): ClickerPart {
     const mesh = solid.getMesh();
+    let volumeMm3: number | undefined;
+    let areaMm2: number | undefined;
+    try {
+      volumeMm3 = solid.volume();
+      areaMm2 = solid.surfaceArea();
+    } catch {
+      /* older kernel builds: no estimate */
+    }
     return {
       kind,
       group,
       colorRgb,
       name,
+      volumeMm3,
+      areaMm2,
       numProp: mesh.numProp,
       vertProperties: new Float32Array(mesh.vertProperties),
       triVerts: new Uint32Array(mesh.triVerts),
