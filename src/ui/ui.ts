@@ -1,5 +1,5 @@
-import type { BaseDepthKind, BaseShapeKind, BlocksLayout, EditMode, EdgeSetting, EdgeStyle, ImportMode, KeychainParams, PaletteEntry, SwitchPlacement, ViewMode, RGB } from '../types';
-import { DEEP_BASE_EXTRA_MM, FILAMENTS } from '../types';
+import type { BaseDepthKind, BaseShapeKind, BlocksLayout, EditMode, EdgeSetting, EdgeStyle, ImportMode, KeychainParams, PaletteEntry, PlateFit, SwitchPlacement, ViewMode, RGB } from '../types';
+import { DEEP_BASE_EXTRA_MM, FILAMENTS, PRINT_PLATES } from '../types';
 import type { SectionAxis } from '../viewer/viewer';
 import { SAMPLES } from '../image/sample';
 import type { RgbaImage } from '../image/decode';
@@ -14,6 +14,9 @@ const BASE_SOCKET_TOL = 0.4;
 
 export interface UiState {
   status: string;
+  /** Selected build plate id ('' = none) and whether the print layout fits it. */
+  plateId: string;
+  plateFit: PlateFit | null;
   building: boolean;
   hasParts: boolean;
   colorCount: number;
@@ -114,6 +117,8 @@ export interface UiCallbacks {
   onRemoveBg(on: boolean): void;
   onView(mode: ViewMode): void;
   onShowSwitch(on: boolean): void;
+  /** Pick the build plate to outline under the model ('' = none). */
+  onPlate(id: string): void;
   onSection(axis: SectionAxis, pos: number): void;
   onExport(): void;
   onRenderPng(): void;
@@ -227,6 +232,14 @@ export function createUi(
       <div class="switch-row">
         <span class="switch-label">Show MX switch ${tip('Shows a reference MX switch in the preview so you can check the fit. It is not part of the exported model.')}</span>
         <label class="toggle"><input id="showswitch" type="checkbox" /><span class="slider"></span></label>
+      </div>
+      <div class="field" style="margin-top: 12px; margin-bottom: 0;">
+        <label for="plateSelect">Print plate ${tip('Outlines the build plate under the model and checks that the exported print layout (base and top side by side) fits on it in either orientation.')}</label>
+        <select id="plateSelect">
+          <option value="">No plate outline</option>
+          ${PRINT_PLATES.map((p) => `<option value="${p.id}">${p.name}</option>`).join('')}
+        </select>
+        <div id="plateNote" class="plate-note" hidden></div>
       </div>
     </div>
 
@@ -1321,6 +1334,8 @@ export function createUi(
 
   const keychain = $<HTMLInputElement>('keychain');
   keychain.addEventListener('change', () => cb.onKeychainToggle(keychain.checked));
+  const plateSelect = $<HTMLSelectElement>('plateSelect');
+  plateSelect.addEventListener('change', () => cb.onPlate(plateSelect.value));
 
   $('keychainRotMinus').addEventListener('click', () => cb.onKeychainRotate(-15));
   $('keychainRotPlus').addEventListener('click', () => cb.onKeychainRotate(15));
@@ -2079,6 +2094,19 @@ export function createUi(
     $<HTMLInputElement>('removebg').checked = state.removeBg;
     $<HTMLInputElement>('removebgSvg').checked = state.removeBg;
     $<HTMLInputElement>('showswitch').checked = state.showSwitch;
+    if (plateSelect.value !== state.plateId) plateSelect.value = state.plateId;
+    const plateNote = $('plateNote');
+    if (state.plateFit && state.hasParts) {
+      const f = state.plateFit;
+      const need = `${Math.round(f.needW)} × ${Math.round(f.needD)} mm`;
+      plateNote.textContent = f.fits
+        ? `Print layout ${need} fits the ${f.plate.w} × ${f.plate.d} mm plate.`
+        : `Print layout ${need} does not fit the ${f.plate.w} × ${f.plate.d} mm plate. Make the design smaller, or place the top and base on separate plates in the slicer.`;
+      plateNote.classList.toggle('warn', !f.fits);
+      plateNote.hidden = false;
+    } else {
+      plateNote.hidden = true;
+    }
 
     // Update Import Mode tabs and panels
     for (const b of importTabs.querySelectorAll<HTMLElement>('[data-mode]')) {

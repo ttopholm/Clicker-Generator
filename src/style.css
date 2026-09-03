@@ -2155,3 +2155,14 @@ button.fil-chip:active {
   text-transform: uppercase;
   margin-top: 4px;
 }
+
+/* Print plate fit note under the plate selector */
+.plate-note {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+.plate-note.warn {
+  color: #dc2626;
+}
+:root:not([data-theme="light"]) .plate-note.warn { color: #f87171; }

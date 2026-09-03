@@ -14,6 +14,8 @@ export interface Viewer {
   showSwitch(on: boolean): void;
   /** Place one preview switch mesh per (clamped) placement the geometry was built with. */
   setSwitchPlacements(placements: SwitchPlacement[]): void;
+  /** Outline a build plate of this size (mm) under the model, or none. */
+  setPlate(size: { w: number; d: number } | null): void;
   renderToPng(): Promise<Blob | null>;
   setTheme(theme: string): void;
   /** Register a callback fired when the user clicks a colored part of the model, or null if clicking empty space. */
@@ -102,13 +104,46 @@ export function createViewer(container: HTMLElement): Viewer {
 
   let gridZ = -20;
   let grid: THREE.GridHelper | null = null;
+  // Optional build-plate outline drawn just above the grid, centred on the model.
+  let plateSize: { w: number; d: number } | null = null;
+  let plateLine: THREE.LineLoop | null = null;
+
+  function rebuildPlate(theme: string) {
+    if (plateLine) {
+      scene.remove(plateLine);
+      plateLine.geometry.dispose();
+      (plateLine.material as THREE.Material).dispose();
+      plateLine = null;
+    }
+    if (!plateSize) return;
+    const hw = plateSize.w / 2;
+    const hd = plateSize.d / 2;
+    const z = gridZ + 0.1;
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute([-hw, -hd, z, hw, -hd, z, hw, hd, z, -hw, hd, z], 3),
+    );
+    const mat = new THREE.LineBasicMaterial({
+      color: theme === 'dark' ? 0xf59e0b : 0xd97706,
+      transparent: true,
+      opacity: 0.9,
+      depthWrite: false,
+    });
+    plateLine = new THREE.LineLoop(geo, mat);
+    plateLine.renderOrder = -1;
+    scene.add(plateLine);
+  }
 
   function rebuildGrid(theme: string, z: number) {
     if (grid) scene.remove(grid);
     gridZ = z;
     const accentColor = theme === 'dark' ? 0x5b9dff : 0x2563eb;
     const gridColor = theme === 'dark' ? 0x2d3139 : 0xd1d5db;
-    grid = new THREE.GridHelper(300, 30, accentColor, gridColor);
+    // The grid grows to keep a big plate (H2D) inside it; 10 mm cells either way.
+    const extent = Math.max(300, plateSize ? Math.max(plateSize.w, plateSize.d) + 40 : 0);
+    const cells = Math.round(extent / 10);
+    grid = new THREE.GridHelper(extent, cells, accentColor, gridColor);
     grid.rotation.x = Math.PI / 2;
     grid.position.z = gridZ;
     // Prevent grid lines from bleeding through model body:
@@ -120,6 +155,13 @@ export function createViewer(container: HTMLElement): Viewer {
       grid.material.depthWrite = false;
     }
     scene.add(grid);
+    rebuildPlate(theme);
+  }
+
+  function setPlate(size: { w: number; d: number } | null) {
+    plateSize = size ? { w: size.w, d: size.d } : null;
+    const activeTheme = document.documentElement.getAttribute('data-theme') || 'dark';
+    rebuildGrid(activeTheme, gridZ);
   }
 
   rebuildGrid(currentTheme, gridZ);
@@ -520,6 +562,7 @@ export function createViewer(container: HTMLElement): Viewer {
     setSwitch,
     showSwitch,
     setSwitchPlacements,
+    setPlate,
     renderToPng,
     setTheme,
     onPartPick,
