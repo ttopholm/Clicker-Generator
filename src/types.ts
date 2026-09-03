@@ -172,6 +172,8 @@ export interface BuildParams {
   baseShape: BaseShapeKind;
   /** Regular body, or a deeper one with an accessory pocket under the switch. */
   baseDepth: BaseDepthKind;
+  /** Extra depth of the deep base below the socket, mm (default DEEP_BASE_EXTRA_MM). */
+  deepExtraMm?: number;
   /** Blocks mode. When set, `regions`/`outline`/`switches` are ignored and one square
    *  cap with its own switch is built per cell on a shared straight-edged body. */
   blocks?: BlocksParams;

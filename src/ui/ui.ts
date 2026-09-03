@@ -35,6 +35,8 @@ export interface UiState {
   baseShape: BaseShapeKind;
   /** Regular body, or a deeper one with an accessory pocket under the switch. */
   baseDepth: BaseDepthKind;
+  /** Extra depth of the deep base below the socket, mm. */
+  deepExtraMm: number;
   capWidthMm: number;
   topThickness: number;
   imageDepth: number;
@@ -99,6 +101,8 @@ export interface UiCallbacks {
   onShape(kind: BaseShapeKind): void;
   /** Pick the standard body or the deeper one (extra room under the switch). */
   onBaseDepth(kind: BaseDepthKind): void;
+  /** Set how much deeper the deep base is below the socket, mm. */
+  onDeepExtra(mm: number): void;
   onWidth(mm: number): void;
   onTopThickness(mm: number): void;
   onImageDepth(mm: number): void;
@@ -290,6 +294,13 @@ export function createUi(
           <button class="tab active" data-depth="standard" type="button">Standard</button>
           <button class="tab" data-depth="deep" type="button">Deep</button>
         </div>
+      </div>
+      <div class="prow-stacked" id="deepExtraRow" style="margin-top: 12px;" hidden>
+        <div class="prow-header">
+          <label for="deepExtra">Extra depth ${tip('How much taller the deep base is below the switch, in mm. The pocket under the switch grows by the same amount. 5.17 mm fits the LED clicker assembly; go deeper for thicker modules or batteries.')}</label>
+          <input type="text" class="val" id="deepExtraVal" />
+        </div>
+        <input type="range" id="deepExtra" min="3" max="12" step="0.1" />
       </div>
     </div>
 
@@ -1132,6 +1143,8 @@ export function createUi(
     const t = (e.target as HTMLElement).closest('[data-depth]') as HTMLElement | null;
     if (t) cb.onBaseDepth(t.dataset.depth as BaseDepthKind);
   });
+  const deepExtra = $<HTMLInputElement>('deepExtra');
+  deepExtra.addEventListener('input', () => cb.onDeepExtra(+deepExtra.value));
 
   // --- Blocks: text, layout, sizes, symbol slots ---
   const blocksText = $<HTMLInputElement>('blocksText');
@@ -1430,6 +1443,7 @@ export function createUi(
   bindValInput('widthVal', width, cb.onWidth);
   bindValInput('topthickVal', topthick, cb.onTopThickness);
   bindValInput('imgdepthVal', imgdepth, cb.onImageDepth);
+  bindValInput('deepExtraVal', deepExtra, cb.onDeepExtra);
   bindValInput('blocksLetterScaleVal', blocksLetterScale, (v) => cb.onBlocksLetterScale(v / 100));
   bindValInput('blocksSizeVal', blocksSize, cb.onBlocksSize);
 
@@ -2208,6 +2222,9 @@ export function createUi(
     for (const b of baseDepthTabs.querySelectorAll<HTMLElement>('[data-depth]')) {
       b.classList.toggle('active', b.dataset.depth === state.baseDepth);
     }
+    $('deepExtraRow').hidden = state.baseDepth !== 'deep';
+    deepExtra.value = String(state.deepExtraMm);
+    setVal('deepExtraVal', state.deepExtraMm.toFixed(2).replace(/\.?0+$/, '') + ' mm');
 
     // Update View tabs
     for (const b of viewTabs.querySelectorAll<HTMLElement>('button')) {

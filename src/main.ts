@@ -24,7 +24,7 @@ import type {
   SwitchPlacement,
   BuildCell,
 } from './types';
-import { FILAMENTS, PRINT_PLATES } from './types';
+import { DEEP_BASE_EXTRA_MM, FILAMENTS, PRINT_PLATES } from './types';
 
 // Start fetching switch assets immediately at startup to run in parallel with worker setup
 const base = import.meta.env.BASE_URL;
@@ -66,6 +66,7 @@ const store = createStore<UiState>({
   palette: [],
   baseShape: 'outline',
   baseDepth: 'standard',
+  deepExtraMm: DEEP_BASE_EXTRA_MM,
   capWidthMm: 35,
   topThickness: 1.5,
   imageDepth: 0.8,
@@ -169,6 +170,10 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
   onBaseDepth: (kind) => {
     // Standard vs deep base: only the body changes (deeper floor + accessory pocket).
     store.set({ baseDepth: kind });
+    debouncedRebuild();
+  },
+  onDeepExtra: (mm) => {
+    store.set({ deepExtraMm: Math.round(Math.max(1, Math.min(15, mm)) * 100) / 100 });
     debouncedRebuild();
   },
   onWidth: (mm) => {
@@ -499,7 +504,7 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
 // (reprocess) starts a fresh baseline. Restoring rebuilds the geometry.
 const HISTORY_FIELDS = [
   'palette', 'paletteOverrides', 'partOverrides', 'bodyColorRgb', 'baseColorOverride',
-  'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'baseDepth', 'blocksLayout', 'capWidthMm', 'topThickness',
+  'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'baseDepth', 'deepExtraMm', 'blocksLayout', 'capWidthMm', 'topThickness',
   'imageDepth', 'tolerance', 'stemTolerance', 'switches', 'keychain',
 ] as const;
 let history: string[] = [];
@@ -1044,6 +1049,7 @@ function rebuild(quiet = false) {
   const params: BuildParams = {
     baseShape: isBlocks ? 'square' : effectiveBaseShape,
     baseDepth: s.baseDepth,
+    deepExtraMm: s.deepExtraMm,
     capWidthMm: s.capWidthMm,
     topThickness: Math.max(1, s.topThickness),
     imageDepth: s.imageDepth,
@@ -1354,6 +1360,7 @@ function buildProject(): ProjectFile {
       colorCount: s.colorCount,
       baseShape: s.baseShape,
       baseDepth: s.baseDepth,
+      deepExtraMm: s.deepExtraMm,
       capWidthMm: s.capWidthMm,
       topThickness: s.topThickness,
       imageDepth: s.imageDepth,
@@ -1486,6 +1493,79 @@ async function applyProject(proj: any) {
 async function loadProject(file: File) {
   try {
     store.set({ building: true, status: 'Loading project…' });
+    const proj = JSON.parse(await file.text());
+    const set = proj.settings ?? {};
+
+    currentText = set.currentText ?? 'Custom\nText';
+    currentFontId = set.currentFontId ?? 'helvetiker-regular';
+    currentSvgText = set.currentSvgText ?? '';
+    currentSvgName = set.currentSvgName ?? '';
+    currentIconText = set.currentIconText ?? '';
+    currentIconName = set.currentIconName ?? '';
+
+    if (currentSvgText && currentSvgName) {
+      ui.addUploadedSvg(currentSvgText, currentSvgName);
+    }
+
+    store.set({
+      importMode: set.importMode ?? 'image',
+      blocksText: typeof set.blocksText === 'string' ? set.blocksText : 'Name',
+      blockSymbols: Array.isArray(set.blockSymbols)
+        ? normalizeSymbols(
+            set.blockSymbols.filter((b: any) => b && Number.isFinite(b.index) && (typeof b.icon === 'string' || typeof b.emoji === 'string')),
+            typeof set.blocksText === 'string' ? set.blocksText : 'Name',
+          )
+        : [],
+      blocksLayout: set.blocksLayout === 'vertical' ? 'vertical' : 'horizontal',
+      blocksLetterScale: typeof set.blocksLetterScale === 'number' ? set.blocksLetterScale : 1,
+      blocksSize: typeof set.blocksSize === 'number' ? set.blocksSize : 22,
+      colorCount: set.colorCount ?? store.get().colorCount,
+      baseShape: set.baseShape ?? store.get().baseShape,
+      baseDepth: set.baseDepth === 'deep' ? 'deep' : 'standard',
+      deepExtraMm: typeof set.deepExtraMm === 'number' && isFinite(set.deepExtraMm) ? set.deepExtraMm : DEEP_BASE_EXTRA_MM,
+      capWidthMm: set.capWidthMm ?? store.get().capWidthMm,
+      topThickness: set.topThickness ?? store.get().topThickness,
+      imageDepth: set.imageDepth ?? store.get().imageDepth,
+      tolerance: set.tolerance ?? store.get().tolerance,
+      stemTolerance: set.stemTolerance ?? 0,
+      // v3 stores `switches`; older (v2) projects carried scalar offsets — synthesize
+      // a single-switch array from them for back-compat.
+      switches: Array.isArray(set.switches) && set.switches.length
+        ? set.switches
+        : [{ x: set.switchOffsetX ?? 0, y: set.switchOffsetY ?? 0, rotation: set.switchRotation ?? 0 }],
+      activeSwitchIndex: 0,
+      // v3 stores a keychain object; older projects had a boolean (or nothing).
+      keychain: set.keychain && typeof set.keychain === 'object'
+        ? { offsetMm: 0, ...set.keychain }
+        : { enabled: set.keychain === true, style: 'loop', angleDeg: 90, holeDiameterMm: 5.2, offsetMm: 0 },
+      smoothing: set.smoothing ?? store.get().smoothing,
+      removeBg: set.removeBg ?? store.get().removeBg,
+      currentIconName: currentIconName || 'circle',
+      colorMode: set.colorMode ?? 'normal',
+      limitedColors: set.limitedColors ?? [],
+      bodyColorRgb: set.bodyColorRgb ?? [120, 124, 130],
+      paletteOverrides: set.paletteOverrides ?? [],
+      partOverrides: set.partOverrides ?? {},
+      edgeSettings: set.edgeSettings ?? store.get().edgeSettings,
+      extrudeChamfer: set.extrudeChamfer ?? false,
+      separateLetters: set.separateLetters ?? false,
+      componentHeights: set.componentHeights ?? {},
+    });
+
+    if (set.importMode === 'image' && proj.image) {
+      originalImage = await dataUrlToImage(proj.image);
+    }
+
+    reprocess();
+
+    if (Array.isArray(proj.palette)) {
+      const pal = store.get().palette.map((p, i) => ({
+        ...p,
+        filamentRgb: proj.palette[i]?.filamentRgb ?? p.filamentRgb,
+      }));
+      store.set({ palette: pal, baseColorOverride: set.baseColorOverride ?? null });
+      rebuild();
+    }
     await applyProject(JSON.parse(await file.text()));
   } catch (err) {
     store.set({ building: false, status: 'Could not load project: ' + String(err) });
