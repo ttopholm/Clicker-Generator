@@ -6,9 +6,10 @@ import { loadFileToImage, type RgbaImage } from './image/decode';
 import { processImage } from './image/pipeline';
 import { runWizard } from './ui/wizard';
 import { downloadThreeMF } from './export/threemfExport';
+import { downloadStlZip } from './export/stlExport';
 import { parseSvg } from './image/logo';
 import { SAMPLES, SVG_SAMPLES } from './image/sample';
-import { parseLetter, importFontFile } from './image/letter';
+import { parseLetter, importFontFile, FONT_OPTIONS } from './image/letter';
 import { LUCIDE_ICONS, buildSvg } from './image/lucideIcons';
 import { BLOCKS_MARGIN_MM, BLOCKS_WALL_MM, blockItems, blocksPitch, normalizeSymbols, placeBlocks, traceBlocks } from './image/blocks';
 import type {
@@ -118,6 +119,9 @@ let currentText = 'Custom\nText';
 let blockCells: BuildCell[] = [];
 let currentFontId = 'helvetiker-regular';
 let isInitialLoad = true;
+// Message to show when builds land during the next few seconds (a restore triggers two
+// builds: the trace and the palette re-apply), e.g. "Restored your last design".
+let statusAfterBuild: { text: string; until: number } | null = null;
 
 const hasImage = () => originalImage !== null;
 function cloneImage(img: RgbaImage): RgbaImage {
@@ -287,11 +291,12 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
   onExport: () => {
     if (!latestParts.length) return;
     downloadThreeMF(latestParts, 'clicker.3mf');
-    // First download of the session → big license modal; later ones → quiet corner toast.
-    // The counter is in-memory, so a page refresh re-shows the big modal on the next download.
-    downloadCount += 1;
-    if (downloadCount === 1) showLicenseModal();
-    else showLicenseToast();
+    afterDownload();
+  },
+  onExportStl: () => {
+    if (!latestParts.length) return;
+    downloadStlZip(latestParts, 'clicker-stl.zip');
+    afterDownload();
   },
   onRenderPng: async () => {
     const blob = await viewer.renderToPng();
@@ -308,6 +313,7 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
   },
   onSaveProject: () => saveProject(),
   onLoadProject: (file) => loadProject(file),
+  onNewDesign: () => newDesign(),
   onBodyColor: (hex) => {
     // Live recolor of the clicker body — no rebuild (geometry is unchanged).
     const idx = latestParts.findIndex((p) => p.name === 'base-body');
@@ -555,6 +561,7 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
+store.subscribe(() => debouncedAutosave());
 store.subscribe((s) => {
   ui.update(s);
 
@@ -760,7 +767,10 @@ worker.onmessage = (e: MessageEvent<GeometryResponse>) => {
         }
       }
       if (isInitialLoad) {
-        loadDefaultClicker();
+        restoreAutosave().then((restored) => {
+          if (!restored) loadDefaultClicker();
+          autosaveArmed = true;
+        });
       } else {
         reprocess();
       }
@@ -781,7 +791,9 @@ worker.onmessage = (e: MessageEvent<GeometryResponse>) => {
         building: false,
         hasParts: msg.parts.length > 0,
         // Surface any non-fatal build note (switches pinched, no keychain room) or clear.
-        status: msg.warnings && msg.warnings.length ? msg.warnings[0] : '',
+        status: msg.warnings && msg.warnings.length
+          ? msg.warnings[0]
+          : statusAfterBuild && Date.now() < statusAfterBuild.until ? statusAfterBuild.text : '',
       });
       isInitialLoad = false;
 
@@ -1117,6 +1129,14 @@ function estimateMaterial(parts: ClickerPart[]): MaterialEstimate | null {
   return { solidG, printedG, minutes: (printedG / PRINT_G_PER_HOUR) * 60 };
 }
 
+// First download of the session → big license modal; later ones → quiet corner toast.
+// The counter is in-memory, so a page refresh re-shows the big modal on the next download.
+function afterDownload() {
+  downloadCount += 1;
+  if (downloadCount === 1) showLicenseModal();
+  else showLicenseToast();
+}
+
 function firstLine(s: string): string {
   return s.split('\n')[0];
 }
@@ -1228,9 +1248,28 @@ function dataUrlToImage(url: string): Promise<RgbaImage> {
   });
 }
 
-function saveProject() {
+/** The project file: every setting plus the palette mapping and (optionally) the image. */
+interface ProjectFile {
+  version: number;
+  settings: Record<string, unknown>;
+  palette: PaletteEntry[];
+  image: string | null;
+}
+
+// The source image as a PNG data URL, computed once per image (the canvas round-trip
+// is slow for big photos and autosave asks for it after every change).
+let imageUrlCache: { img: RgbaImage; url: string } | null = null;
+function currentImageDataUrl(): string | null {
+  if (!originalImage) return null;
+  if (!imageUrlCache || imageUrlCache.img !== originalImage) {
+    imageUrlCache = { img: originalImage, url: imageToDataUrl(originalImage) };
+  }
+  return imageUrlCache.url;
+}
+
+function buildProject(): ProjectFile {
   const s = store.get();
-  const proj = {
+  return {
     version: 3,
     settings: {
       colorCount: s.colorCount,
@@ -1269,90 +1308,170 @@ function saveProject() {
       componentHeights: s.componentHeights,
     },
     palette: s.palette, // filament mappings
-    image: originalImage ? imageToDataUrl(originalImage) : null,
+    image: currentImageDataUrl(),
   };
+}
+
+function saveProject() {
+  const proj = buildProject();
   downloadBlob(new Blob([JSON.stringify(proj)], { type: 'application/json' }), 'clicker-project.json');
   store.set({ status: 'Project saved ✓' });
+}
+
+/** Bundled fonts load in the background; give a saved font a moment to arrive so the
+ *  restored text is traced with the right one instead of the fallback. */
+async function waitForFont(fontId: string, maxMs = 4000): Promise<void> {
+  const t0 = Date.now();
+  while (!FONT_OPTIONS.some((f) => f.id === fontId) && Date.now() - t0 < maxMs) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
+/** Apply a parsed project (from a file, the autosave or a link) to the app and rebuild. */
+async function applyProject(proj: any) {
+  const set = proj.settings ?? {};
+
+  currentText = set.currentText ?? 'Custom\nText';
+  currentFontId = set.currentFontId ?? 'helvetiker-regular';
+  currentSvgText = set.currentSvgText ?? '';
+  currentSvgName = set.currentSvgName ?? '';
+  currentIconText = set.currentIconText ?? '';
+  currentIconName = set.currentIconName ?? '';
+
+  if (currentSvgText && currentSvgName) {
+    ui.addUploadedSvg(currentSvgText, currentSvgName);
+  }
+
+  store.set({
+    importMode: set.importMode ?? 'image',
+    blocksText: typeof set.blocksText === 'string' ? set.blocksText : 'Name',
+    blockSymbols: Array.isArray(set.blockSymbols)
+      ? normalizeSymbols(
+          set.blockSymbols.filter((b: any) => b && Number.isFinite(b.index) && (typeof b.icon === 'string' || typeof b.emoji === 'string')),
+          typeof set.blocksText === 'string' ? set.blocksText : 'Name',
+        )
+      : [],
+    blocksLayout: set.blocksLayout === 'vertical' ? 'vertical' : 'horizontal',
+    blocksLetterScale: typeof set.blocksLetterScale === 'number' ? set.blocksLetterScale : 1,
+    blocksSize: typeof set.blocksSize === 'number' ? set.blocksSize : 22,
+    colorCount: set.colorCount ?? store.get().colorCount,
+    baseShape: set.baseShape ?? store.get().baseShape,
+    baseDepth: set.baseDepth === 'deep' ? 'deep' : 'standard',
+    capWidthMm: set.capWidthMm ?? store.get().capWidthMm,
+    topThickness: set.topThickness ?? store.get().topThickness,
+    imageDepth: set.imageDepth ?? store.get().imageDepth,
+    tolerance: set.tolerance ?? store.get().tolerance,
+    stemTolerance: set.stemTolerance ?? 0,
+    // v3 stores `switches`; older (v2) projects carried scalar offsets — synthesize
+    // a single-switch array from them for back-compat.
+    switches: Array.isArray(set.switches) && set.switches.length
+      ? set.switches
+      : [{ x: set.switchOffsetX ?? 0, y: set.switchOffsetY ?? 0, rotation: set.switchRotation ?? 0 }],
+    activeSwitchIndex: 0,
+    // v3 stores a keychain object; older projects had a boolean (or nothing).
+    keychain: set.keychain && typeof set.keychain === 'object'
+      ? { offsetMm: 0, ...set.keychain }
+      : { enabled: set.keychain === true, style: 'loop', angleDeg: 90, holeDiameterMm: 5.2, offsetMm: 0 },
+    smoothing: set.smoothing ?? store.get().smoothing,
+    removeBg: set.removeBg ?? store.get().removeBg,
+    currentIconName: currentIconName || 'circle',
+    colorMode: set.colorMode ?? 'normal',
+    limitedColors: set.limitedColors ?? [],
+    bodyColorRgb: set.bodyColorRgb ?? [120, 124, 130],
+    paletteOverrides: set.paletteOverrides ?? [],
+    partOverrides: set.partOverrides ?? {},
+    edgeSettings: set.edgeSettings ?? store.get().edgeSettings,
+    extrudeChamfer: set.extrudeChamfer ?? false,
+    separateLetters: set.separateLetters ?? false,
+    componentHeights: set.componentHeights ?? {},
+  });
+
+  if (set.importMode === 'image' && proj.image) {
+    originalImage = await dataUrlToImage(proj.image);
+  }
+  await waitForFont(currentFontId);
+  ui.setTextSource(currentText, currentFontId);
+
+  reprocess();
+
+  if (Array.isArray(proj.palette)) {
+    const pal = store.get().palette.map((p, i) => ({
+      ...p,
+      filamentRgb: proj.palette[i]?.filamentRgb ?? p.filamentRgb,
+    }));
+    store.set({ palette: pal, baseColorOverride: set.baseColorOverride ?? null });
+    rebuild();
+  }
 }
 
 async function loadProject(file: File) {
   try {
     store.set({ building: true, status: 'Loading project…' });
-    const proj = JSON.parse(await file.text());
-    const set = proj.settings ?? {};
-
-    currentText = set.currentText ?? 'Custom\nText';
-    currentFontId = set.currentFontId ?? 'helvetiker-regular';
-    currentSvgText = set.currentSvgText ?? '';
-    currentSvgName = set.currentSvgName ?? '';
-    currentIconText = set.currentIconText ?? '';
-    currentIconName = set.currentIconName ?? '';
-
-    if (currentSvgText && currentSvgName) {
-      ui.addUploadedSvg(currentSvgText, currentSvgName);
-    }
-
-    store.set({
-      importMode: set.importMode ?? 'image',
-      blocksText: typeof set.blocksText === 'string' ? set.blocksText : 'Name',
-      blockSymbols: Array.isArray(set.blockSymbols)
-        ? normalizeSymbols(
-            set.blockSymbols.filter((b: any) => b && Number.isFinite(b.index) && (typeof b.icon === 'string' || typeof b.emoji === 'string')),
-            typeof set.blocksText === 'string' ? set.blocksText : 'Name',
-          )
-        : [],
-      blocksLayout: set.blocksLayout === 'vertical' ? 'vertical' : 'horizontal',
-      blocksLetterScale: typeof set.blocksLetterScale === 'number' ? set.blocksLetterScale : 1,
-      blocksSize: typeof set.blocksSize === 'number' ? set.blocksSize : 22,
-      colorCount: set.colorCount ?? store.get().colorCount,
-      baseShape: set.baseShape ?? store.get().baseShape,
-      baseDepth: set.baseDepth === 'deep' ? 'deep' : 'standard',
-      capWidthMm: set.capWidthMm ?? store.get().capWidthMm,
-      topThickness: set.topThickness ?? store.get().topThickness,
-      imageDepth: set.imageDepth ?? store.get().imageDepth,
-      tolerance: set.tolerance ?? store.get().tolerance,
-      stemTolerance: set.stemTolerance ?? 0,
-      // v3 stores `switches`; older (v2) projects carried scalar offsets — synthesize
-      // a single-switch array from them for back-compat.
-      switches: Array.isArray(set.switches) && set.switches.length
-        ? set.switches
-        : [{ x: set.switchOffsetX ?? 0, y: set.switchOffsetY ?? 0, rotation: set.switchRotation ?? 0 }],
-      activeSwitchIndex: 0,
-      // v3 stores a keychain object; older projects had a boolean (or nothing).
-      keychain: set.keychain && typeof set.keychain === 'object'
-        ? { offsetMm: 0, ...set.keychain }
-        : { enabled: set.keychain === true, style: 'loop', angleDeg: 90, holeDiameterMm: 5.2, offsetMm: 0 },
-      smoothing: set.smoothing ?? store.get().smoothing,
-      removeBg: set.removeBg ?? store.get().removeBg,
-      currentIconName: currentIconName || 'circle',
-      colorMode: set.colorMode ?? 'normal',
-      limitedColors: set.limitedColors ?? [],
-      bodyColorRgb: set.bodyColorRgb ?? [120, 124, 130],
-      paletteOverrides: set.paletteOverrides ?? [],
-      partOverrides: set.partOverrides ?? {},
-      edgeSettings: set.edgeSettings ?? store.get().edgeSettings,
-      extrudeChamfer: set.extrudeChamfer ?? false,
-      separateLetters: set.separateLetters ?? false,
-      componentHeights: set.componentHeights ?? {},
-    });
-
-    if (set.importMode === 'image' && proj.image) {
-      originalImage = await dataUrlToImage(proj.image);
-    }
-
-    reprocess();
-
-    if (Array.isArray(proj.palette)) {
-      const pal = store.get().palette.map((p, i) => ({
-        ...p,
-        filamentRgb: proj.palette[i]?.filamentRgb ?? p.filamentRgb,
-      }));
-      store.set({ palette: pal, baseColorOverride: set.baseColorOverride ?? null });
-      rebuild();
-    }
+    await applyProject(JSON.parse(await file.text()));
   } catch (err) {
     store.set({ building: false, status: 'Could not load project: ' + String(err) });
   }
+}
+
+// ---- Autosave: the current design is kept in localStorage and restored on the next
+//      visit, so a reload (or a closed tab) never loses work. Best effort: private
+//      windows or a full quota simply skip it. ----
+const AUTOSAVE_KEY = 'clicker_autosave_v1';
+/** Images above this data-URL size are left out so the entry fits the ~5 MB quota. */
+const AUTOSAVE_IMAGE_MAX_CHARS = 2_000_000;
+let autosaveArmed = false; // only after the initial design is in, so we never save a blank slate
+
+function autosaveNow() {
+  if (!autosaveArmed) return;
+  try {
+    const proj = buildProject();
+    if (proj.image && proj.image.length > AUTOSAVE_IMAGE_MAX_CHARS) proj.image = null;
+    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(proj));
+  } catch {
+    /* quota exceeded or storage unavailable — autosave is a convenience, not a requirement */
+  }
+}
+const debouncedAutosave = debounce(autosaveNow, 800);
+
+function readAutosave(): ProjectFile | null {
+  try {
+    const raw = localStorage.getItem(AUTOSAVE_KEY);
+    if (!raw) return null;
+    const proj = JSON.parse(raw);
+    if (!proj || typeof proj !== 'object' || !proj.settings) return null;
+    // An image design whose image did not fit in storage cannot be rebuilt.
+    if (proj.settings.importMode === 'image' && !proj.image) return null;
+    return proj as ProjectFile;
+  } catch {
+    return null;
+  }
+}
+
+/** Restore the autosaved design; returns false when there is none (or it is unusable). */
+async function restoreAutosave(): Promise<boolean> {
+  const proj = readAutosave();
+  if (!proj) return false;
+  try {
+    store.set({ building: true, status: 'Restoring your last design…' });
+    statusAfterBuild = { text: 'Restored your last design.', until: Date.now() + 8000 };
+    await applyProject(proj);
+    return true;
+  } catch (err) {
+    console.warn('Could not restore the autosaved design', err);
+    store.set({ building: false, status: '' });
+    return false;
+  }
+}
+
+/** Forget the autosaved design and start over with the default clicker. */
+function newDesign() {
+  try {
+    localStorage.removeItem(AUTOSAVE_KEY);
+  } catch {
+    /* ignore */
+  }
+  autosaveArmed = false;
+  location.reload();
 }
 
 const AI_PROMPT = [
