@@ -23,7 +23,7 @@ import type {
   SwitchPlacement,
   BuildCell,
 } from './types';
-import { FILAMENTS } from './types';
+import { DEFAULT_MAGNETS, FILAMENTS } from './types';
 
 // Start fetching switch assets immediately at startup to run in parallel with worker setup
 const base = import.meta.env.BASE_URL;
@@ -68,6 +68,7 @@ const store = createStore<UiState>({
   activeSwitchIndex: 0,
   smoothing: 0.1,
   keychain: { enabled: false, style: 'loop', angleDeg: 90, holeDiameterMm: 5.2, offsetMm: 0 },
+  magnets: { ...DEFAULT_MAGNETS },
   removeBg: true,
   view: 'exploded',
   showSwitch: true,
@@ -262,6 +263,24 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
     const kc = store.get().keychain;
     const offsetMm = Math.round(Math.max(-15.0, Math.min(15.0, (kc.offsetMm ?? 0) + deltaMm)) * 10) / 10;
     store.set({ keychain: { ...kc, offsetMm } });
+    debouncedRebuild();
+  },
+  onMagnetsToggle: (on) => {
+    store.set({ magnets: { ...store.get().magnets, enabled: on } });
+    debouncedRebuild();
+  },
+  onMagnetsCount: (n) => {
+    store.set({ magnets: { ...store.get().magnets, count: n } });
+    debouncedRebuild();
+  },
+  onMagnetsDiameter: (deltaMm) => {
+    const m = store.get().magnets;
+    store.set({ magnets: { ...m, diameterMm: Math.round(Math.max(3, Math.min(12, m.diameterMm + deltaMm)) * 10) / 10 } });
+    debouncedRebuild();
+  },
+  onMagnetsDepth: (deltaMm) => {
+    const m = store.get().magnets;
+    store.set({ magnets: { ...m, depthMm: Math.round(Math.max(1, Math.min(5, m.depthMm + deltaMm)) * 10) / 10 } });
     debouncedRebuild();
   },
   onSmoothing: (v) => {
@@ -479,7 +498,7 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
 const HISTORY_FIELDS = [
   'palette', 'paletteOverrides', 'partOverrides', 'bodyColorRgb', 'baseColorOverride',
   'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'baseDepth', 'blocksLayout', 'capWidthMm', 'topThickness',
-  'imageDepth', 'tolerance', 'stemTolerance', 'switches', 'keychain',
+  'imageDepth', 'tolerance', 'stemTolerance', 'switches', 'keychain', 'magnets',
 ] as const;
 let history: string[] = [];
 let histIndex = -1;
@@ -1027,6 +1046,7 @@ function rebuild(quiet = false) {
     floorThickness: 1.6,
     switches: s.switches,
     keychain: s.keychain,
+    magnets: s.magnets,
     baseFilamentRgb: capBaseColor,
     bodyColorRgb: s.bodyColorRgb ?? ([120, 124, 130] as RGB),
     edgeSettings: s.edgeSettings,
@@ -1213,6 +1233,7 @@ function saveProject() {
       stemTolerance: s.stemTolerance,
       switches: s.switches,
       keychain: s.keychain,
+      magnets: s.magnets,
       smoothing: s.smoothing,
       removeBg: s.removeBg,
       importMode: s.importMode,
@@ -1292,6 +1313,7 @@ async function loadProject(file: File) {
       keychain: set.keychain && typeof set.keychain === 'object'
         ? { offsetMm: 0, ...set.keychain }
         : { enabled: set.keychain === true, style: 'loop', angleDeg: 90, holeDiameterMm: 5.2, offsetMm: 0 },
+      magnets: set.magnets && typeof set.magnets === 'object' ? { ...DEFAULT_MAGNETS, ...set.magnets } : { ...DEFAULT_MAGNETS },
       smoothing: set.smoothing ?? store.get().smoothing,
       removeBg: set.removeBg ?? store.get().removeBg,
       currentIconName: currentIconName || 'circle',

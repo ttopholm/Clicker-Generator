@@ -1,4 +1,4 @@
-import type { BaseDepthKind, BaseShapeKind, BlocksLayout, EditMode, EdgeSetting, EdgeStyle, ImportMode, KeychainParams, PaletteEntry, SwitchPlacement, ViewMode, RGB } from '../types';
+import type { BaseDepthKind, BaseShapeKind, BlocksLayout, EditMode, EdgeSetting, EdgeStyle, ImportMode, KeychainParams, MagnetParams, PaletteEntry, SwitchPlacement, ViewMode, RGB } from '../types';
 import { DEEP_BASE_EXTRA_MM, FILAMENTS } from '../types';
 import type { SectionAxis } from '../viewer/viewer';
 import { SAMPLES } from '../image/sample';
@@ -34,6 +34,8 @@ export interface UiState {
   activeSwitchIndex: number;
   smoothing: number;
   keychain: KeychainParams;
+  /** Magnet pockets in the bottom of the body. */
+  magnets: MagnetParams;
   removeBg: boolean;
   view: ViewMode;
   showSwitch: boolean;
@@ -111,6 +113,12 @@ export interface UiCallbacks {
   onKeychainSize(deltaMm: number): void;
   /** Slide the keychain attachment along the body edge by delta mm. */
   onKeychainOffset(deltaMm: number): void;
+  onMagnetsToggle(on: boolean): void;
+  onMagnetsCount(n: number): void;
+  /** Change the magnet diameter by delta mm (pocket is cut 0.2 mm wider). */
+  onMagnetsDiameter(deltaMm: number): void;
+  /** Change the magnet thickness / pocket depth by delta mm. */
+  onMagnetsDepth(deltaMm: number): void;
   onRemoveBg(on: boolean): void;
   onView(mode: ViewMode): void;
   onShowSwitch(on: boolean): void;
@@ -361,6 +369,44 @@ export function createUi(
                 <button class="btn" id="keychainSizeMinus" type="button" aria-label="Smaller hole">−</button>
                 <span class="tol-val" id="keychainSizeVal">5.2 mm</span>
                 <button class="btn" id="keychainSizePlus" type="button" aria-label="Bigger hole">+</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="keychain-panel" style="margin-bottom: 16px;">
+          <div class="switch-row" style="margin-bottom: 12px;">
+            <span class="switch-label">Magnets ${tip('Round pockets in the bottom of the base for stick-in disc magnets (glue them in), so the clicker sticks to a fridge or a steel desk. Pockets are cut 0.2 mm wider than the magnet for a snug fit and are only placed where the base is solid.')}</span>
+            <label class="toggle"><input id="magnets" type="checkbox" /><span class="slider"></span></label>
+          </div>
+          <div id="magnetOpts" style="display:none;">
+            <div class="field" style="margin-bottom: 12px;">
+              <label>Number of magnets</label>
+              <div class="tabs" id="magnetCount" role="tablist">
+                <button class="tab" data-count="2" type="button">2</button>
+                <button class="tab" data-count="3" type="button">3</button>
+                <button class="tab active" data-count="4" type="button">4</button>
+                <button class="tab" data-count="6" type="button">6</button>
+              </div>
+            </div>
+            <div class="prow-stacked">
+              <div class="prow-header">
+                <label>Magnet diameter ${tip('Diameter of the magnets you have, in mm. 6 mm discs are the common size.')}</label>
+              </div>
+              <div class="tol-stepper" id="magnetDiaStepper">
+                <button class="btn" id="magnetDiaMinus" type="button" aria-label="Smaller magnets">−</button>
+                <span class="tol-val" id="magnetDiaVal">6.0 mm</span>
+                <button class="btn" id="magnetDiaPlus" type="button" aria-label="Bigger magnets">+</button>
+              </div>
+            </div>
+            <div class="prow-stacked">
+              <div class="prow-header">
+                <label>Magnet thickness ${tip('Thickness of the magnets = depth of the pockets, in mm.')}</label>
+              </div>
+              <div class="tol-stepper" id="magnetDepthStepper">
+                <button class="btn" id="magnetDepthMinus" type="button" aria-label="Thinner magnets">−</button>
+                <span class="tol-val" id="magnetDepthVal">2.0 mm</span>
+                <button class="btn" id="magnetDepthPlus" type="button" aria-label="Thicker magnets">+</button>
               </div>
             </div>
           </div>
@@ -1321,6 +1367,16 @@ export function createUi(
 
   const keychain = $<HTMLInputElement>('keychain');
   keychain.addEventListener('change', () => cb.onKeychainToggle(keychain.checked));
+  const magnets = $<HTMLInputElement>('magnets');
+  magnets.addEventListener('change', () => cb.onMagnetsToggle(magnets.checked));
+  $('magnetCount').addEventListener('click', (e) => {
+    const t = (e.target as HTMLElement).closest('[data-count]') as HTMLElement | null;
+    if (t) cb.onMagnetsCount(+t.dataset.count!);
+  });
+  $('magnetDiaMinus').addEventListener('click', () => cb.onMagnetsDiameter(-0.5));
+  $('magnetDiaPlus').addEventListener('click', () => cb.onMagnetsDiameter(0.5));
+  $('magnetDepthMinus').addEventListener('click', () => cb.onMagnetsDepth(-0.5));
+  $('magnetDepthPlus').addEventListener('click', () => cb.onMagnetsDepth(0.5));
 
   $('keychainRotMinus').addEventListener('click', () => cb.onKeychainRotate(-15));
   $('keychainRotPlus').addEventListener('click', () => cb.onKeychainRotate(15));
@@ -2076,6 +2132,13 @@ export function createUi(
     if (kcOffsetEl) kcOffsetEl.textContent = `${(kc.offsetMm ?? 0.0).toFixed(1)} mm`;
     const kcSizeEl = document.getElementById('keychainSizeVal');
     if (kcSizeEl) kcSizeEl.textContent = `${kc.holeDiameterMm.toFixed(1)} mm`;
+    magnets.checked = state.magnets.enabled;
+    $('magnetOpts').style.display = state.magnets.enabled ? 'block' : 'none';
+    for (const b of $('magnetCount').querySelectorAll<HTMLElement>('[data-count]')) {
+      b.classList.toggle('active', +b.dataset.count! === state.magnets.count);
+    }
+    $('magnetDiaVal').textContent = `${state.magnets.diameterMm.toFixed(1)} mm`;
+    $('magnetDepthVal').textContent = `${state.magnets.depthMm.toFixed(1)} mm`;
     $<HTMLInputElement>('removebg').checked = state.removeBg;
     $<HTMLInputElement>('removebgSvg').checked = state.removeBg;
     $<HTMLInputElement>('showswitch').checked = state.showSwitch;

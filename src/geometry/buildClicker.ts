@@ -808,6 +808,93 @@ export function buildClicker(
   for (const sk of socketAts) body = track(body.subtract(sk));
   for (const pk of pocketAts) body = track(body.subtract(pk));
 
+  // Magnet pockets: round recesses in the bottom face for stick-in disc magnets. A
+  // pocket may only go where the body is solid all the way up: outside every switch
+  // column (plus a wall) and inside the outline (plus a wall). That "allowed" region is
+  // the outline eroded by (radius + wall) minus the columns grown by the radius; grid
+  // points inside it are candidates, and the pockets are spread out farthest-first so
+  // they end up at the corners/edges. Ones that do not fit are reported, not forced.
+  const mg = params.magnets;
+  if (mg && mg.enabled && mg.count > 0) {
+    const wall = 1.6;
+    const r = Math.max(1.5, (mg.diameterMm + 0.2) / 2); // +0.2 mm: snug press fit
+    const depth = Math.max(0.5, mg.depthMm);
+    const n = Math.max(1, Math.min(8, Math.round(mg.count)));
+    let allowed: Section = shrink(bodyFootprint, wall + r, track(CrossSection.square([0.01, 0.01], true)));
+    const keepOutBase = roundedRect(socketDim + 2 * (wall + r), socketDim + 2 * (wall + r), 2.0 + r);
+    for (const sw of applied) {
+      const k = track(
+        (Math.abs(sw.rotation) > 0.001 ? track(keepOutBase.rotate(sw.rotation)) : keepOutBase).translate([sw.x, sw.y]),
+      );
+      allowed = track(allowed.subtract(k));
+    }
+    let rings: [number, number][][] = [];
+    try {
+      rings = sectionIsEmpty(allowed) ? [] : (allowed.toPolygons() as [number, number][][]);
+    } catch {
+      rings = [];
+    }
+    const inside = (x: number, y: number): boolean => {
+      let hit = false; // even-odd over all rings (outer boundaries and holes alike)
+      for (const ring of rings) {
+        for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+          const [xi, yi] = ring[i];
+          const [xj, yj] = ring[j];
+          if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) hit = !hit;
+        }
+      }
+      return hit;
+    };
+    const chosen: [number, number][] = [];
+    if (rings.length) {
+      const bb = allowed.bounds();
+      const w = bb.max[0] - bb.min[0];
+      const h = bb.max[1] - bb.min[1];
+      const step = Math.max(1.0, Math.sqrt((w * h) / 3000));
+      const cands: [number, number][] = [];
+      for (let y = bb.min[1] + step / 2; y <= bb.max[1]; y += step) {
+        for (let x = bb.min[0] + step / 2; x <= bb.max[0]; x += step) {
+          if (inside(x, y)) cands.push([x, y]);
+        }
+      }
+      const fb = bodyFootprint.bounds();
+      const cx = (fb.min[0] + fb.max[0]) / 2;
+      const cy = (fb.min[1] + fb.max[1]) / 2;
+      const minGap = 2 * r + wall; // pockets must not run into each other
+      // Farthest-point sampling: start at the candidate farthest from the centre, then
+      // keep adding the one farthest from everything chosen so far.
+      let best = -1;
+      let bestD = -1;
+      cands.forEach((c, i) => {
+        const d = Math.hypot(c[0] - cx, c[1] - cy);
+        if (d > bestD) { bestD = d; best = i; }
+      });
+      if (best >= 0) chosen.push(cands[best]);
+      while (chosen.length < n && cands.length) {
+        let pick = -1;
+        let pickD = -1;
+        for (const c of cands) {
+          let d = Infinity;
+          for (const q of chosen) d = Math.min(d, Math.hypot(c[0] - q[0], c[1] - q[1]));
+          if (d > pickD) { pickD = d; pick = cands.indexOf(c); }
+        }
+        if (pick < 0 || pickD < minGap) break;
+        chosen.push(cands[pick]);
+      }
+    }
+    for (const [x, y] of chosen) {
+      const pocket = track(Manifold.cylinder(depth + 0.02, r, r, 48).translate([x, y, bodyBottomZ - 0.01]));
+      body = track(body.subtract(pocket));
+    }
+    if (chosen.length < n) {
+      warnings.push(
+        chosen.length === 0
+          ? 'No room for magnet pockets — try a bigger design or smaller magnets.'
+          : `Only ${chosen.length} of ${n} magnet pockets fit — try a bigger design or smaller magnets.`,
+      );
+    }
+  }
+
   // Covert identity mark: subtract a seeded void constellation anchored to switch #0's
   // socket, buried in the always-solid ring (invisible on prints, visible in a slicer
   // section view). Only active when VITE_MARK_SEED is set (deployed build); dev builds

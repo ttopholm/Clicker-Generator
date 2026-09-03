@@ -96,6 +96,19 @@ export interface KeychainParams {
   offsetMm: number;
 }
 
+/** Magnet pockets in the bottom of the body, for stick-in disc magnets. */
+export interface MagnetParams {
+  enabled: boolean;
+  /** Number of pockets (2, 3, 4 or 6), spread around the body's edge. */
+  count: number;
+  /** Magnet diameter, mm; the pocket is cut 0.2 mm wider for a snug fit. */
+  diameterMm: number;
+  /** Magnet thickness = pocket depth, mm. */
+  depthMm: number;
+}
+
+export const DEFAULT_MAGNETS: MagnetParams = { enabled: false, count: 4, diameterMm: 6, depthMm: 2 };
+
 /** Bambu-style image preprocessing. Adjustment values are multipliers, 1 = neutral. */
 export interface PreprocessParams {
   cropRatio: CropRatio;
@@ -171,6 +184,8 @@ export interface BuildParams {
    *  and enforces a minimum centre-to-centre pitch, reporting the applied array back. */
   switches: SwitchPlacement[];
   keychain: KeychainParams; // keyring attachment (loop tab or inside hole) on the body
+  /** Optional magnet pockets in the body's bottom face. */
+  magnets?: MagnetParams;
   baseFilamentRgb: RGB; // cap backing + stem color
   bodyColorRgb: RGB;
   /** Component-specific height levels (partName -> level integer) */
