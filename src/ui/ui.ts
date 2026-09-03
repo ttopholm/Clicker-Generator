@@ -12,8 +12,19 @@ import { MAX_BLOCKS, blockChars, insertSymbol, looksLikeEmoji, replaceSymbol, ty
  *  offset from this baseline, so a fresh design reads 0. Keep in sync with the store default. */
 const BASE_SOCKET_TOL = 0.4;
 
+/** Rough filament/time estimate for the current parts (see estimateMaterial). */
+export interface MaterialEstimate {
+  /** Mass of the solid geometry in PLA, g (what a 100 % infill print would use). */
+  solidG: number;
+  /** Estimated printed mass at 15 % infill, g. */
+  printedG: number;
+  /** Rough print time at typical default-profile speeds, minutes. */
+  minutes: number;
+}
+
 export interface UiState {
   status: string;
+  material: MaterialEstimate | null;
   building: boolean;
   hasParts: boolean;
   colorCount: number;
@@ -640,6 +651,7 @@ export function createUi(
     </div>
 
     <div class="sidebar-sticky-footer">
+      <div id="materialNote" class="material-note" hidden></div>
       <button class="primary" id="export" style="width:100%;">Download 3MF</button>
       <div id="projectSettingsContainer">
         <div class="btn-row">
@@ -2145,6 +2157,19 @@ export function createUi(
 
     const exportBtn = $<HTMLButtonElement>('export');
     exportBtn.disabled = !state.hasParts || state.building;
+
+    // Rough material + time estimate for the current parts.
+    const noteEl = $('materialNote');
+    const m = state.material;
+    if (m && state.hasParts) {
+      const fmtG = (g: number) => (g < 10 ? g.toFixed(1) : Math.round(g).toString()) + ' g';
+      const mins = Math.max(1, Math.round(m.minutes));
+      const time = mins >= 60 ? `${Math.floor(mins / 60)} h ${String(mins % 60).padStart(2, '0')} min` : `${mins} min`;
+      noteEl.innerHTML = `<strong>≈ ${fmtG(m.printedG)} PLA</strong> at 15&nbsp;% infill · ${fmtG(m.solidG)} solid · ~${time} ${tip('Rough estimate from the model volume: perimeters and top/bottom layers plus 15 % sparse infill, PLA at 1.24 g/cm³, and a typical default-profile speed. Your slicer knows the real numbers.')}`;
+      noteEl.hidden = false;
+    } else {
+      noteEl.hidden = true;
+    }
 
     // Toggle loading overlay
     const overlay = $('loadingOverlay');

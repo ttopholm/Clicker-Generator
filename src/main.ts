@@ -1,7 +1,7 @@
 import './style.css';
 import { createStore } from './store/store';
 import { createViewer } from './viewer/viewer';
-import { createUi, type UiState } from './ui/ui';
+import { createUi, type MaterialEstimate, type UiState } from './ui/ui';
 import { loadFileToImage, type RgbaImage } from './image/decode';
 import { processImage } from './image/pipeline';
 import { runWizard } from './ui/wizard';
@@ -53,6 +53,7 @@ function defaultSwitchLayout(n: number, capWidthMm: number): SwitchPlacement[] {
 // ---- State (UI-facing) ----
 const store = createStore<UiState>({
   status: 'Loading switch assets…',
+  material: null,
   building: false,
   hasParts: false,
   colorCount: 4,
@@ -766,6 +767,7 @@ worker.onmessage = (e: MessageEvent<GeometryResponse>) => {
       break;
     case 'parts': {
       latestParts = msg.parts;
+      store.set({ material: estimateMaterial(msg.parts) });
       viewer.setParts(msg.parts, !pendingHistoryReset);
       viewer.setView(store.get().view);
       // Seat one preview switch per (clamped) placement the geometry was built around.
@@ -1087,6 +1089,34 @@ function rgbToHex(rgb: RGB): string {
     rgb.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')
   );
 }
+// ---- Material estimate ----------------------------------------------------
+// Manifold gives exact solid volumes; a print uses less because the slicer hollows the
+// inside with sparse infill. Approximate the printed mass as a shell (perimeters + top /
+// bottom layers, ~1.2 mm of the surface) plus 15 % of the remaining volume, in PLA.
+const PLA_G_PER_CM3 = 1.24;
+const SHELL_MM = 1.2;
+const INFILL = 0.15;
+/** Typical throughput of a fast bed-slinger / CoreXY at default profiles, g per hour. */
+const PRINT_G_PER_HOUR = 9;
+
+function estimateMaterial(parts: ClickerPart[]): MaterialEstimate | null {
+  let solidMm3 = 0;
+  let printedMm3 = 0;
+  let any = false;
+  for (const p of parts) {
+    if (typeof p.volumeMm3 !== 'number' || !isFinite(p.volumeMm3)) continue;
+    any = true;
+    const v = Math.max(0, p.volumeMm3);
+    const shell = Math.min(v, Math.max(0, p.areaMm2 ?? 0) * SHELL_MM);
+    solidMm3 += v;
+    printedMm3 += shell + (v - shell) * INFILL;
+  }
+  if (!any) return null;
+  const solidG = (solidMm3 / 1000) * PLA_G_PER_CM3;
+  const printedG = (printedMm3 / 1000) * PLA_G_PER_CM3;
+  return { solidG, printedG, minutes: (printedG / PRINT_G_PER_HOUR) * 60 };
+}
+
 function firstLine(s: string): string {
   return s.split('\n')[0];
 }
