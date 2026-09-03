@@ -2,16 +2,17 @@ import './style.css';
 import { createStore } from './store/store';
 import { deflateSync, inflateSync, strFromU8, strToU8 } from 'fflate';
 import { createViewer } from './viewer/viewer';
-import { createUi, type UiState } from './ui/ui';
+import { createUi, type MaterialEstimate, type UiState } from './ui/ui';
 import { loadFileToImage, type RgbaImage } from './image/decode';
 import { processImage } from './image/pipeline';
 import { runWizard } from './ui/wizard';
 import { downloadThreeMF } from './export/threemfExport';
+import { downloadStlZip } from './export/stlExport';
 import { parseSvg } from './image/logo';
 import { SAMPLES, SVG_SAMPLES } from './image/sample';
 import { parseLetter, importFontFile, FONT_OPTIONS } from './image/letter';
 import { LUCIDE_ICONS, buildSvg } from './image/lucideIcons';
-import { BLOCKS_MARGIN_MM, BLOCKS_WALL_MM, blockItems, blocksPitch, normalizeSymbols, placeBlocks, traceBlocks } from './image/blocks';
+import { BLOCKS_MARGIN_MM, BLOCKS_WALL_MM, blockItems, blocksPitch, normalizeSymbols, placeBlocks, traceBlocks, traceEmoji } from './image/blocks';
 import type {
   BuildParams,
   BuildRegion,
@@ -24,7 +25,7 @@ import type {
   SwitchPlacement,
   BuildCell,
 } from './types';
-import { FILAMENTS } from './types';
+import { DEEP_BASE_EXTRA_MM, DEFAULT_MAGNETS, FILAMENTS, PRINT_PLATES } from './types';
 
 // Start fetching switch assets immediately at startup to run in parallel with worker setup
 const base = import.meta.env.BASE_URL;
@@ -52,14 +53,21 @@ function defaultSwitchLayout(n: number, capWidthMm: number): SwitchPlacement[] {
 }
 
 // ---- State (UI-facing) ----
+// localStorage key for the chosen print plate (read during store creation below).
+const PLATE_KEY = 'clicker_plate';
+
 const store = createStore<UiState>({
   status: 'Loading switch assets…',
+  plateId: readSavedPlate(),
+  plateFit: null,
+  material: null,
   building: false,
   hasParts: false,
   colorCount: 4,
   palette: [],
   baseShape: 'outline',
   baseDepth: 'standard',
+  deepExtraMm: DEEP_BASE_EXTRA_MM,
   capWidthMm: 35,
   topThickness: 1.5,
   imageDepth: 0.8,
@@ -69,6 +77,7 @@ const store = createStore<UiState>({
   activeSwitchIndex: 0,
   smoothing: 0.1,
   keychain: { enabled: false, style: 'loop', angleDeg: 90, holeDiameterMm: 5.2, offsetMm: 0 },
+  magnets: { ...DEFAULT_MAGNETS },
   removeBg: true,
   view: 'exploded',
   showSwitch: true,
@@ -76,9 +85,12 @@ const store = createStore<UiState>({
   blocksText: 'Name',
   blockSymbols: [],
   blocksLayout: 'horizontal',
+  blocksPerRow: 0,
   blocksLetterScale: 1,
   blocksSize: 22,
+  blocksGap: BLOCKS_WALL_MM,
   currentIconName: 'circle',
+  currentEmoji: '😀',
   colorMode: 'normal',
   limitedColors: [],
   bodyColorRgb: [240, 240, 240] as RGB,
@@ -163,6 +175,10 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
   onBaseDepth: (kind) => {
     // Standard vs deep base: only the body changes (deeper floor + accessory pocket).
     store.set({ baseDepth: kind });
+    debouncedRebuild();
+  },
+  onDeepExtra: (mm) => {
+    store.set({ deepExtraMm: Math.round(Math.max(1, Math.min(15, mm)) * 100) / 100 });
     debouncedRebuild();
   },
   onWidth: (mm) => {
@@ -268,6 +284,24 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
     store.set({ keychain: { ...kc, offsetMm } });
     debouncedRebuild();
   },
+  onMagnetsToggle: (on) => {
+    store.set({ magnets: { ...store.get().magnets, enabled: on } });
+    debouncedRebuild();
+  },
+  onMagnetsCount: (n) => {
+    store.set({ magnets: { ...store.get().magnets, count: n } });
+    debouncedRebuild();
+  },
+  onMagnetsDiameter: (deltaMm) => {
+    const m = store.get().magnets;
+    store.set({ magnets: { ...m, diameterMm: Math.round(Math.max(3, Math.min(12, m.diameterMm + deltaMm)) * 10) / 10 } });
+    debouncedRebuild();
+  },
+  onMagnetsDepth: (deltaMm) => {
+    const m = store.get().magnets;
+    store.set({ magnets: { ...m, depthMm: Math.round(Math.max(1, Math.min(5, m.depthMm + deltaMm)) * 10) / 10 } });
+    debouncedRebuild();
+  },
   onSmoothing: (v) => {
     store.set({ smoothing: v });
     if (store.get().importMode === 'image' && hasImage()) debouncedReprocess();
@@ -290,11 +324,12 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
   onExport: () => {
     if (!latestParts.length) return;
     downloadThreeMF(latestParts, 'clicker.3mf');
-    // First download of the session → big license modal; later ones → quiet corner toast.
-    // The counter is in-memory, so a page refresh re-shows the big modal on the next download.
-    downloadCount += 1;
-    if (downloadCount === 1) showLicenseModal();
-    else showLicenseToast();
+    afterDownload();
+  },
+  onExportStl: () => {
+    if (!latestParts.length) return;
+    downloadStlZip(latestParts, 'clicker-stl.zip');
+    afterDownload();
   },
   onRenderPng: async () => {
     const blob = await viewer.renderToPng();
@@ -308,6 +343,15 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
       store.set({ status: 'Could not copy, see console.' });
       console.log(AI_PROMPT);
     }
+  },
+  onPlate: (id) => {
+    store.set({ plateId: id });
+    try {
+      localStorage.setItem(PLATE_KEY, id);
+    } catch {
+      /* ignore */
+    }
+    applyPlate();
   },
   onSaveProject: () => saveProject(),
   onLoadProject: (file) => loadProject(file),
@@ -344,6 +388,10 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
     currentSvgName = name;
     store.set({ status: `Selected SVG: ${name}. Click Generate to update.` });
   },
+  onSelectEmoji: (emoji) => {
+    store.set({ currentEmoji: emoji });
+    reprocess();
+  },
   onSelectIcon: (svgText, name) => {
     currentIconText = svgText;
     currentIconName = name;
@@ -376,6 +424,11 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
     store.set({ blocksLayout: layout });
     debouncedRebuild();
   },
+  onBlocksPerRow: (n) => {
+    // Wrapping only moves blocks, so a rebuild (no re-trace) is enough.
+    store.set({ blocksPerRow: Math.max(0, Math.round(n)) });
+    debouncedRebuild();
+  },
   onBlocksLetterScale: (v) => {
     store.set({ blocksLetterScale: Math.max(0.3, Math.min(1.5, v)) });
     debouncedReprocess();
@@ -383,6 +436,11 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
   onBlocksSize: (mm) => {
     store.set({ blocksSize: Math.max(20, Math.min(40, mm)) });
     debouncedReprocess();
+  },
+  onBlocksGap: (mm) => {
+    // Wall between blocks: positions only, so a rebuild (no re-trace) is enough.
+    store.set({ blocksGap: Math.round(Math.max(1.2, Math.min(8, mm)) * 10) / 10 });
+    debouncedRebuild();
   },
   onImportFont: async (file) => {
     try {
@@ -484,8 +542,9 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
 // (reprocess) starts a fresh baseline. Restoring rebuilds the geometry.
 const HISTORY_FIELDS = [
   'palette', 'paletteOverrides', 'partOverrides', 'bodyColorRgb', 'baseColorOverride',
-  'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'baseDepth', 'blocksLayout', 'capWidthMm', 'topThickness',
-  'imageDepth', 'tolerance', 'stemTolerance', 'switches', 'keychain',
+  'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'baseDepth', 'blocksLayout',
+  'blocksPerRow', 'capWidthMm', 'topThickness', 'imageDepth', 'tolerance', 'stemTolerance',
+  'switches', 'keychain', 'blocksGap', 'magnets', 'deepExtraMm',
 ] as const;
 let history: string[] = [];
 let histIndex = -1;
@@ -742,6 +801,8 @@ const worker = new Worker(new URL('./workers/geometry.worker.ts', import.meta.ur
   type: 'module',
 });
 
+applyPlate();
+
 worker.onmessage = (e: MessageEvent<GeometryResponse>) => {
   const msg = e.data;
   switch (msg.type) {
@@ -779,6 +840,8 @@ worker.onmessage = (e: MessageEvent<GeometryResponse>) => {
       break;
     case 'parts': {
       latestParts = msg.parts;
+      updatePlateFit();
+      store.set({ material: estimateMaterial(msg.parts) });
       viewer.setParts(msg.parts, !pendingHistoryReset);
       viewer.setView(store.get().view);
       // Seat one preview switch per (clamped) placement the geometry was built around.
@@ -944,6 +1007,15 @@ function reprocess() {
       store.set({ building: false, status: 'Error: ' + e.message });
       return;
     }
+  } else if (s.importMode === 'emoji') {
+    store.set({ building: true, status: 'Tracing emoji…' });
+    const rs = traceEmoji(s.currentEmoji, 320, s.colorCount);
+    if (!rs) {
+      regionSet = null;
+      store.set({ building: false, status: 'Could not draw that emoji — this device has no glyph for it. Try another one.' });
+      return;
+    }
+    regionSet = rs;
   } else if (s.importMode === 'text') {
     try {
       store.set({ building: true, status: 'Generating Text…' });
@@ -1028,11 +1100,12 @@ function rebuild(quiet = false) {
   const params: BuildParams = {
     baseShape: isBlocks ? 'square' : effectiveBaseShape,
     baseDepth: s.baseDepth,
+    deepExtraMm: s.deepExtraMm,
     capWidthMm: s.capWidthMm,
     topThickness: Math.max(1, s.topThickness),
     imageDepth: s.imageDepth,
     imageMargin: isBlocks ? BLOCKS_MARGIN_MM : isText ? 2.5 : 1.2,
-    borderWidth: isBlocks ? BLOCKS_WALL_MM : isText ? 3.5 : 2.6,
+    borderWidth: isBlocks ? Math.max(1.2, s.blocksGap) : isText ? 3.5 : 2.6,
     capProud: 4.0,
     tolerance: s.tolerance,
     stemTolerance: s.stemTolerance,
@@ -1042,6 +1115,7 @@ function rebuild(quiet = false) {
     floorThickness: 1.6,
     switches: s.switches,
     keychain: s.keychain,
+    magnets: s.magnets,
     baseFilamentRgb: capBaseColor,
     bodyColorRgb: s.bodyColorRgb ?? ([120, 124, 130] as RGB),
     edgeSettings: s.edgeSettings,
@@ -1051,7 +1125,7 @@ function rebuild(quiet = false) {
   if (isBlocks) {
     // Position the traced cells for the current layout/tolerance and resolve each
     // block's letter colour (a clicked-on override wins over the palette filament).
-    const cells = placeBlocks(blockCells, s.blocksLayout, blocksPitch(s.blocksSize, s.tolerance));
+    const cells = placeBlocks(blockCells, s.blocksLayout, blocksPitch(s.blocksSize, s.tolerance, s.blocksGap), s.blocksPerRow);
     params.blocks = {
       size: s.blocksSize,
       cells: cells.map((c) => ({
@@ -1102,6 +1176,104 @@ function rgbToHex(rgb: RGB): string {
     rgb.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')
   );
 }
+// ---- Print plate preview + fit check ------------------------------------------
+/** Same gap the exports leave between the base and the flipped top. */
+const PLATE_LAYOUT_GAP_MM = 5;
+
+function readSavedPlate(): string {
+  try {
+    const v = localStorage.getItem(PLATE_KEY);
+    if (v === '') return '';
+    if (v && PRINT_PLATES.some((p) => p.id === v)) return v;
+  } catch {
+    /* ignore */
+  }
+  return 'a1';
+}
+
+function currentPlate() {
+  return PRINT_PLATES.find((p) => p.id === store.get().plateId) ?? null;
+}
+
+/** The exported print layout: base and top side by side, so both must fit at once. */
+function printLayoutSize(parts: ClickerPart[]): { w: number; d: number } | null {
+  const bb = (group: 'top' | 'base') => {
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    for (const p of parts) {
+      if (p.group !== group) continue;
+      const v = p.vertProperties;
+      for (let i = 0; i < v.length; i += p.numProp) {
+        if (v[i] < minX) minX = v[i];
+        if (v[i] > maxX) maxX = v[i];
+        if (v[i + 1] < minY) minY = v[i + 1];
+        if (v[i + 1] > maxY) maxY = v[i + 1];
+      }
+    }
+    return isFinite(minX) ? { w: maxX - minX, d: maxY - minY } : null;
+  };
+  const base = bb('base');
+  const top = bb('top');
+  if (!base && !top) return null;
+  const w = (base?.w ?? 0) + (top?.w ?? 0) + (base && top ? PLATE_LAYOUT_GAP_MM : 0);
+  const d = Math.max(base?.d ?? 0, top?.d ?? 0);
+  return { w, d };
+}
+
+function updatePlateFit() {
+  const plate = currentPlate();
+  const need = latestParts.length ? printLayoutSize(latestParts) : null;
+  if (!plate || !need) {
+    store.set({ plateFit: null });
+    return;
+  }
+  // Either orientation on the plate counts as fitting.
+  const fits =
+    (need.w <= plate.w && need.d <= plate.d) || (need.d <= plate.w && need.w <= plate.d);
+  store.set({ plateFit: { needW: need.w, needD: need.d, plate, fits } });
+}
+
+function applyPlate() {
+  const plate = currentPlate();
+  viewer.setPlate(plate ? { w: plate.w, d: plate.d } : null);
+  updatePlateFit();
+}
+
+// ---- Material estimate ----------------------------------------------------
+// Manifold gives exact solid volumes; a print uses less because the slicer hollows the
+// inside with sparse infill. Approximate the printed mass as a shell (perimeters + top /
+// bottom layers, ~1.2 mm of the surface) plus 15 % of the remaining volume, in PLA.
+const PLA_G_PER_CM3 = 1.24;
+const SHELL_MM = 1.2;
+const INFILL = 0.15;
+/** Typical throughput of a fast bed-slinger / CoreXY at default profiles, g per hour. */
+const PRINT_G_PER_HOUR = 9;
+
+function estimateMaterial(parts: ClickerPart[]): MaterialEstimate | null {
+  let solidMm3 = 0;
+  let printedMm3 = 0;
+  let any = false;
+  for (const p of parts) {
+    if (typeof p.volumeMm3 !== 'number' || !isFinite(p.volumeMm3)) continue;
+    any = true;
+    const v = Math.max(0, p.volumeMm3);
+    const shell = Math.min(v, Math.max(0, p.areaMm2 ?? 0) * SHELL_MM);
+    solidMm3 += v;
+    printedMm3 += shell + (v - shell) * INFILL;
+  }
+  if (!any) return null;
+  const solidG = (solidMm3 / 1000) * PLA_G_PER_CM3;
+  const printedG = (printedMm3 / 1000) * PLA_G_PER_CM3;
+  return { solidG, printedG, minutes: (printedG / PRINT_G_PER_HOUR) * 60 };
+}
+
+// First download of the session → big license modal; later ones → quiet corner toast.
+// The counter is in-memory, so a page refresh re-shows the big modal on the next download.
+function afterDownload() {
+  downloadCount += 1;
+  if (downloadCount === 1) showLicenseModal();
+  else showLicenseToast();
+}
+
 function firstLine(s: string): string {
   return s.split('\n')[0];
 }
@@ -1240,6 +1412,7 @@ function buildProject(): ProjectFile {
       colorCount: s.colorCount,
       baseShape: s.baseShape,
       baseDepth: s.baseDepth,
+      deepExtraMm: s.deepExtraMm,
       capWidthMm: s.capWidthMm,
       topThickness: s.topThickness,
       imageDepth: s.imageDepth,
@@ -1247,20 +1420,24 @@ function buildProject(): ProjectFile {
       stemTolerance: s.stemTolerance,
       switches: s.switches,
       keychain: s.keychain,
+      magnets: s.magnets,
       smoothing: s.smoothing,
       removeBg: s.removeBg,
       importMode: s.importMode,
       blocksText: s.blocksText,
       blockSymbols: s.blockSymbols,
       blocksLayout: s.blocksLayout,
+      blocksPerRow: s.blocksPerRow,
       blocksLetterScale: s.blocksLetterScale,
       blocksSize: s.blocksSize,
+      blocksGap: s.blocksGap,
       currentText,
       currentFontId,
       currentSvgText,
       currentSvgName,
       currentIconText,
       currentIconName,
+      currentEmoji: s.currentEmoji,
       colorMode: s.colorMode,
       limitedColors: s.limitedColors,
       bodyColorRgb: s.bodyColorRgb,
@@ -1372,6 +1549,83 @@ async function applyProject(proj: any) {
 async function loadProject(file: File) {
   try {
     store.set({ building: true, status: 'Loading project…' });
+    const proj = JSON.parse(await file.text());
+    const set = proj.settings ?? {};
+
+    currentText = set.currentText ?? 'Custom\nText';
+    currentFontId = set.currentFontId ?? 'helvetiker-regular';
+    currentSvgText = set.currentSvgText ?? '';
+    currentSvgName = set.currentSvgName ?? '';
+    currentIconText = set.currentIconText ?? '';
+    currentIconName = set.currentIconName ?? '';
+
+    if (currentSvgText && currentSvgName) {
+      ui.addUploadedSvg(currentSvgText, currentSvgName);
+    }
+
+    store.set({
+      importMode: set.importMode ?? 'image',
+      blocksText: typeof set.blocksText === 'string' ? set.blocksText : 'Name',
+      blockSymbols: Array.isArray(set.blockSymbols)
+        ? normalizeSymbols(
+            set.blockSymbols.filter((b: any) => b && Number.isFinite(b.index) && (typeof b.icon === 'string' || typeof b.emoji === 'string')),
+            typeof set.blocksText === 'string' ? set.blocksText : 'Name',
+          )
+        : [],
+      blocksLayout: set.blocksLayout === 'vertical' ? 'vertical' : 'horizontal',
+      blocksPerRow: typeof set.blocksPerRow === 'number' ? Math.max(0, Math.round(set.blocksPerRow)) : 0,
+      blocksLetterScale: typeof set.blocksLetterScale === 'number' ? set.blocksLetterScale : 1,
+      blocksSize: typeof set.blocksSize === 'number' ? set.blocksSize : 22,
+      blocksGap: typeof set.blocksGap === 'number' ? set.blocksGap : BLOCKS_WALL_MM,
+      colorCount: set.colorCount ?? store.get().colorCount,
+      baseShape: set.baseShape ?? store.get().baseShape,
+      baseDepth: set.baseDepth === 'deep' ? 'deep' : 'standard',
+      deepExtraMm: typeof set.deepExtraMm === 'number' && isFinite(set.deepExtraMm) ? set.deepExtraMm : DEEP_BASE_EXTRA_MM,
+      capWidthMm: set.capWidthMm ?? store.get().capWidthMm,
+      topThickness: set.topThickness ?? store.get().topThickness,
+      imageDepth: set.imageDepth ?? store.get().imageDepth,
+      tolerance: set.tolerance ?? store.get().tolerance,
+      stemTolerance: set.stemTolerance ?? 0,
+      // v3 stores `switches`; older (v2) projects carried scalar offsets — synthesize
+      // a single-switch array from them for back-compat.
+      switches: Array.isArray(set.switches) && set.switches.length
+        ? set.switches
+        : [{ x: set.switchOffsetX ?? 0, y: set.switchOffsetY ?? 0, rotation: set.switchRotation ?? 0 }],
+      activeSwitchIndex: 0,
+      // v3 stores a keychain object; older projects had a boolean (or nothing).
+      keychain: set.keychain && typeof set.keychain === 'object'
+        ? { offsetMm: 0, ...set.keychain }
+        : { enabled: set.keychain === true, style: 'loop', angleDeg: 90, holeDiameterMm: 5.2, offsetMm: 0 },
+      magnets: set.magnets && typeof set.magnets === 'object' ? { ...DEFAULT_MAGNETS, ...set.magnets } : { ...DEFAULT_MAGNETS },
+      smoothing: set.smoothing ?? store.get().smoothing,
+      removeBg: set.removeBg ?? store.get().removeBg,
+      currentIconName: currentIconName || 'circle',
+      currentEmoji: typeof set.currentEmoji === 'string' && set.currentEmoji.trim() ? set.currentEmoji : '😀',
+      colorMode: set.colorMode ?? 'normal',
+      limitedColors: set.limitedColors ?? [],
+      bodyColorRgb: set.bodyColorRgb ?? [120, 124, 130],
+      paletteOverrides: set.paletteOverrides ?? [],
+      partOverrides: set.partOverrides ?? {},
+      edgeSettings: set.edgeSettings ?? store.get().edgeSettings,
+      extrudeChamfer: set.extrudeChamfer ?? false,
+      separateLetters: set.separateLetters ?? false,
+      componentHeights: set.componentHeights ?? {},
+    });
+
+    if (set.importMode === 'image' && proj.image) {
+      originalImage = await dataUrlToImage(proj.image);
+    }
+
+    reprocess();
+
+    if (Array.isArray(proj.palette)) {
+      const pal = store.get().palette.map((p, i) => ({
+        ...p,
+        filamentRgb: proj.palette[i]?.filamentRgb ?? p.filamentRgb,
+      }));
+      store.set({ palette: pal, baseColorOverride: set.baseColorOverride ?? null });
+      rebuild();
+    }
     await applyProject(JSON.parse(await file.text()));
   } catch (err) {
     store.set({ building: false, status: 'Could not load project: ' + String(err) });

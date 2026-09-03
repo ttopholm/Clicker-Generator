@@ -1,5 +1,5 @@
-import type { BaseDepthKind, BaseShapeKind, BlocksLayout, EditMode, EdgeSetting, EdgeStyle, ImportMode, KeychainParams, PaletteEntry, SwitchPlacement, ViewMode, RGB } from '../types';
-import { DEEP_BASE_EXTRA_MM, FILAMENTS } from '../types';
+import type { BaseDepthKind, BaseShapeKind, BlocksLayout, EdgeSetting, EdgeStyle, EditMode, ImportMode, KeychainParams, MagnetParams, PaletteEntry, PlateFit, RGB, SwitchPlacement, ViewMode } from '../types';
+import { DEEP_BASE_EXTRA_MM, FILAMENTS, PRINT_PLATES } from '../types';
 import type { SectionAxis } from '../viewer/viewer';
 import { SAMPLES } from '../image/sample';
 import type { RgbaImage } from '../image/decode';
@@ -12,8 +12,25 @@ import { MAX_BLOCKS, blockChars, insertSymbol, looksLikeEmoji, replaceSymbol, ty
  *  offset from this baseline, so a fresh design reads 0. Keep in sync with the store default. */
 const BASE_SOCKET_TOL = 0.4;
 
+// A handful of popular emoji for one-click use (symbol picker and the Emoji tab);
+// anything else can be pasted.
+const QUICK_EMOJI = ['😀', '😍', '😎', '🤣', '😭', '🥳', '👍', '❤️', '🔥', '⭐', '🎉', '🚀', '⚡', '🌈', '🍀', '🐶', '🐱', '🦄', '🍕', '☕', '🎵', '🎮', '⚽', '🏠'];
+/** Rough filament/time estimate for the current parts (see estimateMaterial). */
+export interface MaterialEstimate {
+  /** Mass of the solid geometry in PLA, g (what a 100 % infill print would use). */
+  solidG: number;
+  /** Estimated printed mass at 15 % infill, g. */
+  printedG: number;
+  /** Rough print time at typical default-profile speeds, minutes. */
+  minutes: number;
+}
+
 export interface UiState {
   status: string;
+  /** Selected build plate id ('' = none) and whether the print layout fits it. */
+  plateId: string;
+  plateFit: PlateFit | null;
+  material: MaterialEstimate | null;
   building: boolean;
   hasParts: boolean;
   colorCount: number;
@@ -21,6 +38,8 @@ export interface UiState {
   baseShape: BaseShapeKind;
   /** Regular body, or a deeper one with an accessory pocket under the switch. */
   baseDepth: BaseDepthKind;
+  /** Extra depth of the deep base below the socket, mm. */
+  deepExtraMm: number;
   capWidthMm: number;
   topThickness: number;
   imageDepth: number;
@@ -34,6 +53,8 @@ export interface UiState {
   activeSwitchIndex: number;
   smoothing: number;
   keychain: KeychainParams;
+  /** Magnet pockets in the bottom of the body. */
+  magnets: MagnetParams;
   removeBg: boolean;
   view: ViewMode;
   showSwitch: boolean;
@@ -43,11 +64,17 @@ export interface UiState {
   blocksText: string;
   blockSymbols: BlockSymbol[];
   blocksLayout: BlocksLayout;
+  /** Wrap after this many blocks per row/column; 0 = all on one line. */
+  blocksPerRow: number;
   /** Glyph box as a fraction of the block's usable area (1 = 100 %). */
   blocksLetterScale: number;
   /** Block (keycap) side length, mm. */
   blocksSize: number;
+  /** Wall between neighbouring blocks (and the outer border), mm. */
+  blocksGap: number;
   currentIconName: string;
+  /** Emoji tab: the emoji the whole clicker is traced from. */
+  currentEmoji: string;
   colorMode: 'normal' | 'limited';
   limitedColors: RGB[];
   bodyColorRgb: RGB;
@@ -85,6 +112,8 @@ export interface UiCallbacks {
   onShape(kind: BaseShapeKind): void;
   /** Pick the standard body or the deeper one (extra room under the switch). */
   onBaseDepth(kind: BaseDepthKind): void;
+  /** Set how much deeper the deep base is below the socket, mm. */
+  onDeepExtra(mm: number): void;
   onWidth(mm: number): void;
   onTopThickness(mm: number): void;
   onImageDepth(mm: number): void;
@@ -111,11 +140,21 @@ export interface UiCallbacks {
   onKeychainSize(deltaMm: number): void;
   /** Slide the keychain attachment along the body edge by delta mm. */
   onKeychainOffset(deltaMm: number): void;
+  onMagnetsToggle(on: boolean): void;
+  onMagnetsCount(n: number): void;
+  /** Change the magnet diameter by delta mm (pocket is cut 0.2 mm wider). */
+  onMagnetsDiameter(deltaMm: number): void;
+  /** Change the magnet thickness / pocket depth by delta mm. */
+  onMagnetsDepth(deltaMm: number): void;
   onRemoveBg(on: boolean): void;
   onView(mode: ViewMode): void;
   onShowSwitch(on: boolean): void;
+  /** Pick the build plate to outline under the model ('' = none). */
+  onPlate(id: string): void;
   onSection(axis: SectionAxis, pos: number): void;
   onExport(): void;
+  /** ZIP of binary STL files (top, base and every coloured part). */
+  onExportStl(): void;
   onRenderPng(): void;
   onAiPrompt(): void;
   onSaveProject(): void;
@@ -133,11 +172,14 @@ export interface UiCallbacks {
   /** Replace the whole ordered list of symbol blocks (insert / change / remove). */
   onBlockSymbols(symbols: BlockSymbol[]): void;
   onBlocksLayout(layout: BlocksLayout): void;
+  onBlocksPerRow(n: number): void;
   onBlocksLetterScale(scale: number): void;
   onBlocksSize(mm: number): void;
+  onBlocksGap(mm: number): void;
   onSvgUpload(file: File): void;
   onSelectSvg(svgText: string, name: string): void;
   onSelectIcon(svgText: string, name: string): void;
+  onSelectEmoji(emoji: string): void;
   onTextChange(text: string): void;
   onFontSelect(fontId: string): void;
   onImportFont(file: File): void;
@@ -232,6 +274,14 @@ export function createUi(
         <span class="switch-label">Show MX switch ${tip('Shows a reference MX switch in the preview so you can check the fit. It is not part of the exported model.')}</span>
         <label class="toggle"><input id="showswitch" type="checkbox" /><span class="slider"></span></label>
       </div>
+      <div class="field" style="margin-top: 12px; margin-bottom: 0;">
+        <label for="plateSelect">Print plate ${tip('Outlines the build plate under the model and checks that the exported print layout (base and top side by side) fits on it in either orientation.')}</label>
+        <select id="plateSelect">
+          <option value="">No plate outline</option>
+          ${PRINT_PLATES.map((p) => `<option value="${p.id}">${p.name}</option>`).join('')}
+        </select>
+        <div id="plateNote" class="plate-note" hidden></div>
+      </div>
     </div>
 
     <div class="section" id="baseStyleSection">
@@ -267,6 +317,13 @@ export function createUi(
           <button class="tab" data-depth="deep" type="button">Deep</button>
         </div>
       </div>
+      <div class="prow-stacked" id="deepExtraRow" style="margin-top: 12px;" hidden>
+        <div class="prow-header">
+          <label for="deepExtra">Extra depth ${tip('How much taller the deep base is below the switch, in mm. The pocket under the switch grows by the same amount. 5.17 mm fits the LED clicker assembly; go deeper for thicker modules or batteries.')}</label>
+          <input type="text" class="val" id="deepExtraVal" />
+        </div>
+        <input type="range" id="deepExtra" min="3" max="12" step="0.1" />
+      </div>
     </div>
 
     <div class="section" id="blocksSection" hidden>
@@ -277,6 +334,18 @@ export function createUi(
           <button class="tab active" data-layout="horizontal" type="button">Horizontal</button>
           <button class="tab" data-layout="vertical" type="button">Vertical</button>
         </div>
+      </div>
+      <div class="field">
+        <label for="blocksPerRow">Blocks per line ${tip('Wrap the word onto several rows (or columns when Vertical) after this many blocks. A space at the start of a new line is dropped, so "HELLO WORLD" wraps as HELLO / WORLD. Handy when one long row would not fit the plate.')}</label>
+        <select id="blocksPerRow">
+          <option value="0">All on one line</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+          <option value="5">5</option>
+          <option value="6">6</option>
+          <option value="8">8</option>
+        </select>
       </div>
       <div class="prow-stacked">
         <div class="prow-header">
@@ -291,6 +360,13 @@ export function createUi(
           <input type="text" class="val" id="blocksSizeVal" />
         </div>
         <input type="range" id="blocksSize" min="20" max="40" step="1" />
+      </div>
+      <div class="prow-stacked">
+        <div class="prow-header">
+          <label for="blocksGap">Block spacing ${tip('Thickness of the wall between neighbouring blocks (and the outer rim), in mm. Thinner packs the word tighter; thicker spaces the blocks out.')}</label>
+          <input type="text" class="val" id="blocksGapVal" />
+        </div>
+        <input type="range" id="blocksGap" min="1.2" max="8" step="0.2" />
       </div>
     </div>
 
@@ -365,6 +441,44 @@ export function createUi(
                 <button class="btn" id="keychainSizeMinus" type="button" aria-label="Smaller hole">−</button>
                 <span class="tol-val" id="keychainSizeVal">5.2 mm</span>
                 <button class="btn" id="keychainSizePlus" type="button" aria-label="Bigger hole">+</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="keychain-panel" style="margin-bottom: 16px;">
+          <div class="switch-row" style="margin-bottom: 12px;">
+            <span class="switch-label">Magnets ${tip('Round pockets in the bottom of the base for stick-in disc magnets (glue them in), so the clicker sticks to a fridge or a steel desk. Pockets are cut 0.2 mm wider than the magnet for a snug fit and are only placed where the base is solid.')}</span>
+            <label class="toggle"><input id="magnets" type="checkbox" /><span class="slider"></span></label>
+          </div>
+          <div id="magnetOpts" style="display:none;">
+            <div class="field" style="margin-bottom: 12px;">
+              <label>Number of magnets</label>
+              <div class="tabs" id="magnetCount" role="tablist">
+                <button class="tab" data-count="2" type="button">2</button>
+                <button class="tab" data-count="3" type="button">3</button>
+                <button class="tab active" data-count="4" type="button">4</button>
+                <button class="tab" data-count="6" type="button">6</button>
+              </div>
+            </div>
+            <div class="prow-stacked">
+              <div class="prow-header">
+                <label>Magnet diameter ${tip('Diameter of the magnets you have, in mm. 6 mm discs are the common size.')}</label>
+              </div>
+              <div class="tol-stepper" id="magnetDiaStepper">
+                <button class="btn" id="magnetDiaMinus" type="button" aria-label="Smaller magnets">−</button>
+                <span class="tol-val" id="magnetDiaVal">6.0 mm</span>
+                <button class="btn" id="magnetDiaPlus" type="button" aria-label="Bigger magnets">+</button>
+              </div>
+            </div>
+            <div class="prow-stacked">
+              <div class="prow-header">
+                <label>Magnet thickness ${tip('Thickness of the magnets = depth of the pockets, in mm.')}</label>
+              </div>
+              <div class="tol-stepper" id="magnetDepthStepper">
+                <button class="btn" id="magnetDepthMinus" type="button" aria-label="Thinner magnets">−</button>
+                <span class="tol-val" id="magnetDepthVal">2.0 mm</span>
+                <button class="btn" id="magnetDepthPlus" type="button" aria-label="Thicker magnets">+</button>
               </div>
             </div>
           </div>
@@ -540,7 +654,7 @@ export function createUi(
           </span>
           <span class="card-label">Text</span>
         </button>
-        <button class="import-card import-card-wide" data-mode="blocks" type="button">
+        <button class="import-card" data-mode="blocks" type="button">
           <span class="card-icon">
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="2" y="7" width="6" height="10" rx="1.5"/>
@@ -549,6 +663,10 @@ export function createUi(
             </svg>
           </span>
           <span class="card-label">Blocks</span>
+        </button>
+        <button class="import-card" data-mode="emoji" type="button">
+          <span class="card-icon card-icon-emoji" aria-hidden="true">😀</span>
+          <span class="card-label">Emoji</span>
         </button>
       </div>
 
@@ -641,10 +759,27 @@ export function createUi(
         </div>
         <div id="blocksFontHost"></div>
       </div>
+
+      <!-- Emoji Panel -->
+      <div id="emojiPanel" class="mode-panel" hidden>
+        <p class="hint-text">One emoji becomes the whole clicker, split into a few filament colours (set the number under Colors). It is drawn with this device's emoji font, so it looks like the emoji you see here.</p>
+        <div class="field">
+          <label>Pick an emoji ${tip('Click one of the popular emoji, or paste any emoji into the field (on a Mac press Ctrl+Cmd+Space, on Windows Win+. for the emoji keyboard). Outline base style follows the emoji\'s silhouette.')}</label>
+          <div class="symbol-emoji-row" id="emojiQuick">
+            ${QUICK_EMOJI.map((e) => `<button type="button" class="emoji-btn" data-emoji="${e}" title="${e}">${e}</button>`).join('')}
+          </div>
+          <input type="text" id="emojiInput" class="symbol-emoji-input" placeholder="…or paste any emoji here" maxlength="12" autocomplete="off" spellcheck="false" />
+        </div>
+      </div>
     </div>
 
     <div class="sidebar-sticky-footer">
+      <div id="materialNote" class="material-note" hidden></div>
       <button class="primary" id="export" style="width:100%;">Download 3MF</button>
+      <button class="secondary utility-btn export-stl" id="exportStl" type="button" title="ZIP with binary STL files: the base, the top (flipped for printing) and every coloured part on its own. STL has no colours, so use the 3MF when your slicer supports it.">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>Download STL (zip)</span>
+      </button>
       <div id="projectSettingsContainer">
         <div class="btn-row">
           <button id="saveProj" class="secondary utility-btn" type="button" aria-label="Save project">
@@ -1106,6 +1241,8 @@ export function createUi(
     const t = (e.target as HTMLElement).closest('[data-depth]') as HTMLElement | null;
     if (t) cb.onBaseDepth(t.dataset.depth as BaseDepthKind);
   });
+  const deepExtra = $<HTMLInputElement>('deepExtra');
+  deepExtra.addEventListener('input', () => cb.onDeepExtra(+deepExtra.value));
 
   // --- Blocks: text, layout, sizes, symbol slots ---
   const blocksText = $<HTMLInputElement>('blocksText');
@@ -1115,10 +1252,25 @@ export function createUi(
     const t = (e.target as HTMLElement).closest('[data-layout]') as HTMLElement | null;
     if (t) cb.onBlocksLayout(t.dataset.layout as BlocksLayout);
   });
+  // --- Emoji tab ---
+  const emojiQuick = $('emojiQuick');
+  emojiQuick.addEventListener('click', (e) => {
+    const b = (e.target as HTMLElement).closest('[data-emoji]') as HTMLElement | null;
+    if (b) cb.onSelectEmoji(b.dataset.emoji!);
+  });
+  const emojiInput = $<HTMLInputElement>('emojiInput');
+  emojiInput.addEventListener('input', () => {
+    const v = emojiInput.value.trim();
+    if (looksLikeEmoji(v)) cb.onSelectEmoji(v);
+  });
+  const blocksPerRow = $<HTMLSelectElement>('blocksPerRow');
+  blocksPerRow.addEventListener('change', () => cb.onBlocksPerRow(+blocksPerRow.value));
   const blocksLetterScale = $<HTMLInputElement>('blocksLetterScale');
   blocksLetterScale.addEventListener('input', () => cb.onBlocksLetterScale(+blocksLetterScale.value / 100));
   const blocksSize = $<HTMLInputElement>('blocksSize');
   blocksSize.addEventListener('input', () => cb.onBlocksSize(+blocksSize.value));
+  const blocksGap = $<HTMLInputElement>('blocksGap');
+  blocksGap.addEventListener('input', () => cb.onBlocksGap(+blocksGap.value));
   const blockChips = $('blockChips');
   let chipSymbols: BlockSymbol[] = []; // the list the chip row was rendered from
   blockChips.addEventListener('click', (e) => {
@@ -1138,7 +1290,6 @@ export function createUi(
   });
 
   // A handful of popular emoji for one-click use; anything else can be pasted.
-  const QUICK_EMOJI = ['😀', '😍', '😎', '🤣', '😭', '🥳', '👍', '❤️', '🔥', '⭐', '🎉', '🚀', '⚡', '🌈', '🍀', '🐶', '🐱', '🦄', '🍕', '☕', '🎵', '🎮', '⚽', '🏠'];
 
   // Symbol picker: a small modal over the app with a searchable Lucide grid. Picking an
   // icon sets the slot; "Remove" clears it. Reuses the gallery's .icon styling.
@@ -1347,6 +1498,18 @@ export function createUi(
 
   const keychain = $<HTMLInputElement>('keychain');
   keychain.addEventListener('change', () => cb.onKeychainToggle(keychain.checked));
+  const magnets = $<HTMLInputElement>('magnets');
+  magnets.addEventListener('change', () => cb.onMagnetsToggle(magnets.checked));
+  $('magnetCount').addEventListener('click', (e) => {
+    const t = (e.target as HTMLElement).closest('[data-count]') as HTMLElement | null;
+    if (t) cb.onMagnetsCount(+t.dataset.count!);
+  });
+  $('magnetDiaMinus').addEventListener('click', () => cb.onMagnetsDiameter(-0.5));
+  $('magnetDiaPlus').addEventListener('click', () => cb.onMagnetsDiameter(0.5));
+  $('magnetDepthMinus').addEventListener('click', () => cb.onMagnetsDepth(-0.5));
+  $('magnetDepthPlus').addEventListener('click', () => cb.onMagnetsDepth(0.5));
+  const plateSelect = $<HTMLSelectElement>('plateSelect');
+  plateSelect.addEventListener('change', () => cb.onPlate(plateSelect.value));
 
   $('keychainRotMinus').addEventListener('click', () => cb.onKeychainRotate(-15));
   $('keychainRotPlus').addEventListener('click', () => cb.onKeychainRotate(15));
@@ -1402,8 +1565,10 @@ export function createUi(
   bindValInput('widthVal', width, cb.onWidth);
   bindValInput('topthickVal', topthick, cb.onTopThickness);
   bindValInput('imgdepthVal', imgdepth, cb.onImageDepth);
+  bindValInput('deepExtraVal', deepExtra, cb.onDeepExtra);
   bindValInput('blocksLetterScaleVal', blocksLetterScale, (v) => cb.onBlocksLetterScale(v / 100));
   bindValInput('blocksSizeVal', blocksSize, cb.onBlocksSize);
+  bindValInput('blocksGapVal', blocksGap, cb.onBlocksGap);
 
   // --- View tabs ---
   const viewTabs = $('viewTabs');
@@ -1418,6 +1583,7 @@ export function createUi(
 
   // --- Export and Utility actions ---
   $('export').addEventListener('click', () => cb.onExport());
+  $('exportStl').addEventListener('click', () => cb.onExportStl());
   // render PNG and AI prompt buttons removed per design
   $('saveProj').addEventListener('click', () => cb.onSaveProject());
   $('copyLink').addEventListener('click', () => cb.onCopyLink());
@@ -2106,9 +2272,29 @@ export function createUi(
     if (kcOffsetEl) kcOffsetEl.textContent = `${(kc.offsetMm ?? 0.0).toFixed(1)} mm`;
     const kcSizeEl = document.getElementById('keychainSizeVal');
     if (kcSizeEl) kcSizeEl.textContent = `${kc.holeDiameterMm.toFixed(1)} mm`;
+    magnets.checked = state.magnets.enabled;
+    $('magnetOpts').style.display = state.magnets.enabled ? 'block' : 'none';
+    for (const b of $('magnetCount').querySelectorAll<HTMLElement>('[data-count]')) {
+      b.classList.toggle('active', +b.dataset.count! === state.magnets.count);
+    }
+    $('magnetDiaVal').textContent = `${state.magnets.diameterMm.toFixed(1)} mm`;
+    $('magnetDepthVal').textContent = `${state.magnets.depthMm.toFixed(1)} mm`;
     $<HTMLInputElement>('removebg').checked = state.removeBg;
     $<HTMLInputElement>('removebgSvg').checked = state.removeBg;
     $<HTMLInputElement>('showswitch').checked = state.showSwitch;
+    if (plateSelect.value !== state.plateId) plateSelect.value = state.plateId;
+    const plateNote = $('plateNote');
+    if (state.plateFit && state.hasParts) {
+      const f = state.plateFit;
+      const need = `${Math.round(f.needW)} × ${Math.round(f.needD)} mm`;
+      plateNote.textContent = f.fits
+        ? `Print layout ${need} fits the ${f.plate.w} × ${f.plate.d} mm plate.`
+        : `Print layout ${need} does not fit the ${f.plate.w} × ${f.plate.d} mm plate. Make the design smaller, or place the top and base on separate plates in the slicer.`;
+      plateNote.classList.toggle('warn', !f.fits);
+      plateNote.hidden = false;
+    } else {
+      plateNote.hidden = true;
+    }
 
     // Update Import Mode tabs and panels
     for (const b of importTabs.querySelectorAll<HTMLElement>('[data-mode]')) {
@@ -2120,6 +2306,11 @@ export function createUi(
     $('letterPanel').hidden = state.importMode !== 'text';
     const isBlocks = state.importMode === 'blocks';
     $('blocksPanel').hidden = !isBlocks;
+    $('emojiPanel').hidden = state.importMode !== 'emoji';
+    for (const b of emojiQuick.querySelectorAll<HTMLElement>('[data-emoji]')) {
+      b.classList.toggle('active', b.dataset.emoji === state.currentEmoji);
+    }
+    if (document.activeElement !== emojiInput && emojiInput.value !== state.currentEmoji) emojiInput.value = state.currentEmoji;
     // Blocks share the font list with Text mode: park the one font field in whichever
     // panel is showing.
     const fontField = $('fontField');
@@ -2133,18 +2324,31 @@ export function createUi(
     for (const b of blocksLayoutTabs.querySelectorAll<HTMLElement>('[data-layout]')) {
       b.classList.toggle('active', b.dataset.layout === state.blocksLayout);
     }
+    if (+blocksPerRow.value !== state.blocksPerRow) {
+      // Keep unusual saved values selectable.
+      if (![...blocksPerRow.options].some((o) => +o.value === state.blocksPerRow)) {
+        const o = document.createElement('option');
+        o.value = String(state.blocksPerRow);
+        o.textContent = String(state.blocksPerRow);
+        blocksPerRow.appendChild(o);
+      }
+      blocksPerRow.value = String(state.blocksPerRow);
+    }
     blocksLetterScale.value = String(Math.round(state.blocksLetterScale * 100));
     setVal('blocksLetterScaleVal', Math.round(state.blocksLetterScale * 100) + '%');
     blocksSize.value = String(state.blocksSize);
     setVal('blocksSizeVal', state.blocksSize + ' mm');
+    blocksGap.value = String(state.blocksGap);
+    setVal('blocksGapVal', state.blocksGap.toFixed(1) + ' mm');
     if (document.activeElement !== blocksText && blocksText.value !== state.blocksText) blocksText.value = state.blocksText;
     renderBlockChips(state.blocksText, state.blockSymbols);
 
     // Hide/show image specific fields in colors section
     const showSmoothingAndBg = state.importMode === 'image';
+    const showColorCount = showSmoothingAndBg || state.importMode === 'emoji';
     const ccountField = $('colorCountField');
     const smoothingField = $('smoothingField');
-    if (ccountField) ccountField.style.display = showSmoothingAndBg ? 'grid' : 'none';
+    if (ccountField) ccountField.style.display = showColorCount ? 'grid' : 'none';
     if (smoothingField) smoothingField.style.display = showSmoothingAndBg ? 'grid' : 'none';
 
     // Update Shape controls. Icons can't use the outline style (their thin
@@ -2167,6 +2371,9 @@ export function createUi(
     for (const b of baseDepthTabs.querySelectorAll<HTMLElement>('[data-depth]')) {
       b.classList.toggle('active', b.dataset.depth === state.baseDepth);
     }
+    $('deepExtraRow').hidden = state.baseDepth !== 'deep';
+    deepExtra.value = String(state.deepExtraMm);
+    setVal('deepExtraVal', state.deepExtraMm.toFixed(2).replace(/\.?0+$/, '') + ' mm');
 
     // Update View tabs
     for (const b of viewTabs.querySelectorAll<HTMLElement>('button')) {
@@ -2177,6 +2384,20 @@ export function createUi(
     exportBtn.disabled = !state.hasParts || state.building;
     // Links carry settings only, so an uploaded image cannot travel in one.
     $<HTMLButtonElement>('copyLink').disabled = state.importMode === 'image';
+    $<HTMLButtonElement>('exportStl').disabled = exportBtn.disabled;
+
+    // Rough material + time estimate for the current parts.
+    const noteEl = $('materialNote');
+    const m = state.material;
+    if (m && state.hasParts) {
+      const fmtG = (g: number) => (g < 10 ? g.toFixed(1) : Math.round(g).toString()) + ' g';
+      const mins = Math.max(1, Math.round(m.minutes));
+      const time = mins >= 60 ? `${Math.floor(mins / 60)} h ${String(mins % 60).padStart(2, '0')} min` : `${mins} min`;
+      noteEl.innerHTML = `<strong>≈ ${fmtG(m.printedG)} PLA</strong> at 15&nbsp;% infill · ${fmtG(m.solidG)} solid · ~${time} ${tip('Rough estimate from the model volume: perimeters and top/bottom layers plus 15 % sparse infill, PLA at 1.24 g/cm³, and a typical default-profile speed. Your slicer knows the real numbers.')}`;
+      noteEl.hidden = false;
+    } else {
+      noteEl.hidden = true;
+    }
 
     // Toggle loading overlay
     const overlay = $('loadingOverlay');
