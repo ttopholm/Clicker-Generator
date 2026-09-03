@@ -317,7 +317,7 @@ export function createUi(
           <button class="tab" data-depth="deep" type="button">Deep</button>
         </div>
       </div>
-      <div class="prow-stacked" id="deepExtraRow" style="margin-top: 12px;" hidden>
+      <div class="prow-stacked" id="deepExtraRow" style="margin-top: 12px; display: none;">
         <div class="prow-header">
           <label for="deepExtra">Extra depth ${tip('How much taller the deep base is below the switch, in mm. The pocket under the switch grows by the same amount. 5.17 mm fits the LED clicker assembly; go deeper for thicker modules or batteries.')}</label>
           <input type="text" class="val" id="deepExtraVal" />
@@ -2371,7 +2371,8 @@ export function createUi(
     for (const b of baseDepthTabs.querySelectorAll<HTMLElement>('[data-depth]')) {
       b.classList.toggle('active', b.dataset.depth === state.baseDepth);
     }
-    $('deepExtraRow').hidden = state.baseDepth !== 'deep';
+    // .prow-stacked sets display: grid, which beats the `hidden` attribute — toggle display.
+    $('deepExtraRow').style.display = state.baseDepth === 'deep' ? '' : 'none';
     deepExtra.value = String(state.deepExtraMm);
     setVal('deepExtraVal', state.deepExtraMm.toFixed(2).replace(/\.?0+$/, '') + ' mm');
 
