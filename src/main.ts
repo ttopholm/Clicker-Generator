@@ -10,7 +10,7 @@ import { parseSvg } from './image/logo';
 import { SAMPLES, SVG_SAMPLES } from './image/sample';
 import { parseLetter, importFontFile } from './image/letter';
 import { LUCIDE_ICONS, buildSvg } from './image/lucideIcons';
-import { BLOCKS_MARGIN_MM, BLOCKS_WALL_MM, blockItems, blocksPitch, placeBlocks, traceBlocks } from './image/blocks';
+import { BLOCKS_MARGIN_MM, BLOCKS_WALL_MM, blockItems, blocksPitch, normalizeSymbols, placeBlocks, traceBlocks } from './image/blocks';
 import type {
   BuildParams,
   BuildRegion,
@@ -358,12 +358,12 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
   // Blocks mode edits apply live: text, symbols and sizes re-trace the glyphs; the
   // layout only moves the cells, so it is a plain rebuild.
   onBlocksText: (text) => {
-    store.set({ blocksText: text });
+    // Keep symbol slots valid for the new length (a symbol at the end stays at the end).
+    store.set({ blocksText: text, blockSymbols: normalizeSymbols(store.get().blockSymbols, text) });
     debouncedReprocess();
   },
-  onBlockSymbol: (index, icon) => {
-    const rest = store.get().blockSymbols.filter((b) => b.index !== index);
-    store.set({ blockSymbols: icon ? [...rest, { index, icon }] : rest });
+  onBlockSymbols: (symbols) => {
+    store.set({ blockSymbols: normalizeSymbols(symbols, store.get().blocksText) });
     reprocess();
   },
   onBlocksLayout: (layout) => {
@@ -1041,10 +1041,11 @@ function rebuild(quiet = false) {
       size: s.blocksSize,
       cells: cells.map((c) => ({
         ...c,
-        regions: c.regions.map((r) => ({
-          ...r,
-          filamentRgb: s.partOverrides?.[r.partName] ?? s.palette[0]?.filamentRgb ?? r.filamentRgb,
-        })),
+        regions: c.regions.map((r) => {
+          // 'top-color-{palette index}-{cell}': letters are palette 0, emoji colours follow.
+          const pi = Number(r.partName.split('-')[2]) || 0;
+          return { ...r, filamentRgb: s.partOverrides?.[r.partName] ?? s.palette[pi]?.filamentRgb ?? r.filamentRgb };
+        }),
       })),
     };
   }
@@ -1265,7 +1266,10 @@ async function loadProject(file: File) {
       importMode: set.importMode ?? 'image',
       blocksText: typeof set.blocksText === 'string' ? set.blocksText : 'Name',
       blockSymbols: Array.isArray(set.blockSymbols)
-        ? set.blockSymbols.filter((b: any) => b && Number.isInteger(b.index) && typeof b.icon === 'string')
+        ? normalizeSymbols(
+            set.blockSymbols.filter((b: any) => b && Number.isFinite(b.index) && (typeof b.icon === 'string' || typeof b.emoji === 'string')),
+            typeof set.blocksText === 'string' ? set.blocksText : 'Name',
+          )
         : [],
       blocksLayout: set.blocksLayout === 'vertical' ? 'vertical' : 'horizontal',
       blocksLetterScale: typeof set.blocksLetterScale === 'number' ? set.blocksLetterScale : 1,

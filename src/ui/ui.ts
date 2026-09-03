@@ -6,7 +6,7 @@ import type { RgbaImage } from '../image/decode';
 import type { FontOption } from '../image/letter';
 import { FONT_OPTIONS, loadBundledFonts } from '../image/letter';
 import { LUCIDE_ICONS, buildSvg, svgDataUrl } from '../image/lucideIcons';
-import { MAX_BLOCKS, type BlockSymbol } from '../image/blocks';
+import { MAX_BLOCKS, blockChars, insertSymbol, looksLikeEmoji, replaceSymbol, type BlockSymbol, type SymbolSpec } from '../image/blocks';
 
 /** Base path for bundled public assets (favicon logos, etc.). */
 const ASSET_BASE = import.meta.env.BASE_URL;
@@ -129,8 +129,8 @@ export interface UiCallbacks {
   onImportMode(mode: ImportMode): void;
   /** Blocks mode edits (all apply live). */
   onBlocksText(text: string): void;
-  /** Set (icon name) or remove (null) the symbol block in slot `index`. */
-  onBlockSymbol(index: number, icon: string | null): void;
+  /** Replace the whole ordered list of symbol blocks (insert / change / remove). */
+  onBlockSymbols(symbols: BlockSymbol[]): void;
   onBlocksLayout(layout: BlocksLayout): void;
   onBlocksLetterScale(scale: number): void;
   onBlocksSize(mm: number): void;
@@ -641,8 +641,8 @@ export function createUi(
           <input id="blocksText" type="text" maxlength="${MAX_BLOCKS}" autocomplete="off" spellcheck="false" placeholder="Name" />
         </div>
         <div class="field">
-          <label>Add symbol ${tip('Insert a symbol block anywhere in the word. Symbols come from the same Lucide icon set as the Icon tab.')}</label>
-          <p class="hint-text" style="margin-top:0;">Press + between two blocks to add a symbol there, or click a symbol to change or remove it.</p>
+          <label>Add symbol or emoji ${tip('Insert symbol blocks before, between or after the letters — as many as you like. Pick a Lucide icon (same set as the Icon tab) or an emoji; emoji are drawn with your device\'s emoji font and split into a few filament colours. Letters are always typed in the Text field.')}</label>
+          <p class="hint-text" style="margin-top:0;">Press + to add a symbol or emoji block there, or click one to change or remove it. Click a letter to put the cursor after it in the Text field.</p>
           <div id="blockChips" class="block-chips" role="list"></div>
         </div>
         <div id="blocksFontHost"></div>
@@ -1104,30 +1104,55 @@ export function createUi(
   const blocksSize = $<HTMLInputElement>('blocksSize');
   blocksSize.addEventListener('input', () => cb.onBlocksSize(+blocksSize.value));
   const blockChips = $('blockChips');
+  let chipSymbols: BlockSymbol[] = []; // the list the chip row was rendered from
   blockChips.addEventListener('click', (e) => {
-    const t = (e.target as HTMLElement).closest('[data-slot]') as HTMLElement | null;
+    const target = e.target as HTMLElement;
+    const letter = target.closest('[data-char]') as HTMLElement | null;
+    if (letter) {
+      // Letters live in the Text field: put the cursor right after this one.
+      const at = +letter.dataset.char! + 1;
+      blocksText.focus();
+      blocksText.setSelectionRange(at, at);
+      return;
+    }
+    const t = target.closest('[data-slot]') as HTMLElement | null;
     if (!t) return;
-    openSymbolPicker(+t.dataset.slot!, t.dataset.icon || null);
+    const current: SymbolSpec | null = t.dataset.emoji ? { emoji: t.dataset.emoji } : t.dataset.icon ? { icon: t.dataset.icon } : null;
+    openSymbolPicker(+t.dataset.slot!, +t.dataset.pos!, current);
   });
+
+  // A handful of popular emoji for one-click use; anything else can be pasted.
+  const QUICK_EMOJI = ['😀', '😍', '😎', '🤣', '😭', '🥳', '👍', '❤️', '🔥', '⭐', '🎉', '🚀', '⚡', '🌈', '🍀', '🐶', '🐱', '🦄', '🍕', '☕', '🎵', '🎮', '⚽', '🏠'];
 
   // Symbol picker: a small modal over the app with a searchable Lucide grid. Picking an
   // icon sets the slot; "Remove" clears it. Reuses the gallery's .icon styling.
-  function openSymbolPicker(slot: number, currentIcon: string | null) {
+  function openSymbolPicker(slot: number, pos: number, current: SymbolSpec | null) {
+    const currentIcon = current?.icon ?? null;
+    const apply = (sym: SymbolSpec | null) =>
+      cb.onBlockSymbols(current ? replaceSymbol(chipSymbols, slot, pos, sym) : sym ? insertSymbol(chipSymbols, slot, pos, sym) : chipSymbols);
     document.querySelectorAll('.symbol-overlay').forEach((n) => n.remove());
     const overlay = document.createElement('div');
     overlay.className = 'symbol-overlay';
     overlay.innerHTML = `
       <div class="symbol-card" role="dialog" aria-label="Choose a symbol">
         <div class="symbol-head">
-          <strong>${currentIcon ? 'Change symbol' : 'Add symbol'}</strong>
+          <strong>${current ? 'Change symbol' : 'Add symbol or emoji'}</strong>
           <button type="button" class="symbol-close" aria-label="Close">×</button>
         </div>
+        <div class="symbol-emoji">
+          <div class="symbol-emoji-row">
+            ${QUICK_EMOJI.map((e) => `<button type="button" class="emoji-btn${current?.emoji === e ? ' active' : ''}" data-emoji="${e}" title="${e}">${e}</button>`).join('')}
+          </div>
+          <input type="text" class="symbol-emoji-input" placeholder="…or paste any emoji here" maxlength="12" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="symbol-sep">Lucide icons</div>
         <input type="search" class="symbol-search" placeholder="Search Lucide icons…" autocomplete="off" spellcheck="false" />
         <div class="symbol-grid"></div>
         <div class="symbol-foot">
           <span class="symbol-count"></span>
-          ${currentIcon ? '<button type="button" class="btn symbol-remove">Remove symbol</button>' : ''}
+          ${current ? '<button type="button" class="btn symbol-remove">Remove symbol</button>' : ''}
         </div>
+        <p class="hint-text symbol-hint">Looking to add letters? Close this and type them in the Text field — the blocks follow the text.</p>
       </div>`;
     const close = () => overlay.remove();
     overlay.addEventListener('click', (e) => {
@@ -1135,8 +1160,23 @@ export function createUi(
     });
     overlay.querySelector('.symbol-close')!.addEventListener('click', close);
     overlay.querySelector('.symbol-remove')?.addEventListener('click', () => {
-      cb.onBlockSymbol(slot, null);
+      apply(null);
       close();
+    });
+    overlay.querySelector('.symbol-emoji-row')!.addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest('[data-emoji]') as HTMLElement | null;
+      if (!b) return;
+      apply({ emoji: b.dataset.emoji! });
+      close();
+    });
+    const emojiInput = overlay.querySelector('.symbol-emoji-input') as HTMLInputElement;
+    emojiInput.addEventListener('input', () => {
+      // Pasting / typing an emoji (via the OS emoji keyboard) applies it straight away.
+      const v = emojiInput.value.trim();
+      if (looksLikeEmoji(v)) {
+        apply({ emoji: v });
+        close();
+      }
     });
     const grid = overlay.querySelector('.symbol-grid') as HTMLElement;
     const count = overlay.querySelector('.symbol-count') as HTMLElement;
@@ -1151,7 +1191,7 @@ export function createUi(
       const frag = document.createDocumentFragment();
       for (const ic of matches.slice(0, PAGE)) {
         const el = makeIconEl(svgDataUrl(buildSvg(ic.node)), ic.name, () => {
-          cb.onBlockSymbol(slot, ic.name);
+          apply({ icon: ic.name });
           close();
         });
         if (ic.name === currentIcon) el.classList.add('active');
@@ -1166,56 +1206,75 @@ export function createUi(
     search.focus();
   }
 
-  // Chip row: letters as plain chips, symbol slots as "+" (empty) or the icon (set).
+  // Chip row, in block order: a "+" before and after every block (letter or symbol), so
+  // symbols can go anywhere — including several in a row — and each symbol is clickable.
   let lastChipsKey = '';
   function renderBlockChips(text: string, symbols: BlockSymbol[]) {
-    const chars = Array.from(text.replace(/[\r\n]+/g, ' ')).slice(0, MAX_BLOCKS);
-    const bySlot = new Map<number, string>();
-    for (const b of symbols) if (b.index >= 0 && b.index <= chars.length) bySlot.set(b.index, b.icon);
-    const key = JSON.stringify([chars, [...bySlot.entries()]]);
+    const chars = blockChars(text);
+    const key = JSON.stringify([chars, symbols]);
     if (key === lastChipsKey) return;
     lastChipsKey = key;
+    chipSymbols = symbols.slice();
     blockChips.innerHTML = '';
-    const slotEl = (i: number) => {
-      const icon = bySlot.get(i);
-      if (icon) {
-        const ic = LUCIDE_ICONS.find((x) => x.name === icon);
-        const el = document.createElement('button');
-        el.type = 'button';
-        el.className = 'block-chip symbol';
-        el.dataset.slot = String(i);
-        el.dataset.icon = icon;
-        el.title = `${icon} — click to change or remove`;
-        if (ic) {
-          const img = document.createElement('img');
-          img.src = svgDataUrl(buildSvg(ic.node));
-          img.alt = icon;
-          el.appendChild(img);
-        } else {
-          el.textContent = '?';
-        }
-        return el;
-      }
+    const addBtn = (slot: number, pos: number) => {
       const add = document.createElement('button');
       add.type = 'button';
       add.className = 'block-add';
-      add.dataset.slot = String(i);
+      add.dataset.slot = String(slot);
+      add.dataset.pos = String(pos);
       add.title = 'Add a symbol block here';
       add.setAttribute('aria-label', 'Add a symbol block here');
       add.textContent = '+';
       return add;
     };
+    const symbolChip = (slot: number, pos: number, sym: BlockSymbol) => {
+      const el = document.createElement('button');
+      el.type = 'button';
+      el.dataset.slot = String(slot);
+      el.dataset.pos = String(pos);
+      if (sym.emoji) {
+        el.className = 'block-chip symbol emoji';
+        el.dataset.emoji = sym.emoji;
+        el.title = `${sym.emoji} — click to change or remove`;
+        el.textContent = sym.emoji;
+        return el;
+      }
+      const icon = sym.icon ?? '';
+      const ic = LUCIDE_ICONS.find((x) => x.name === icon);
+      el.className = 'block-chip symbol';
+      el.dataset.icon = icon;
+      el.title = `${icon} — click to change or remove`;
+      if (ic) {
+        const img = document.createElement('img');
+        img.src = svgDataUrl(buildSvg(ic.node));
+        img.alt = icon;
+        el.appendChild(img);
+      } else {
+        el.textContent = '?';
+      }
+      return el;
+    };
     for (let i = 0; i <= chars.length; i++) {
-      blockChips.appendChild(slotEl(i));
+      // Symbols in this slot (before letter i), each framed by "+" buttons.
+      let pos = 0;
+      for (const b of symbols) {
+        if (Math.min(chars.length, Math.max(0, b.index)) !== i) continue;
+        blockChips.appendChild(addBtn(i, pos));
+        blockChips.appendChild(symbolChip(i, pos, b));
+        pos++;
+      }
+      blockChips.appendChild(addBtn(i, pos));
       if (i < chars.length) {
-        const chip = document.createElement('span');
-        chip.className = 'block-chip' + (chars[i].trim() ? '' : ' blank');
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'block-chip letter' + (chars[i].trim() ? '' : ' blank');
+        chip.dataset.char = String(i);
         chip.textContent = chars[i].trim() ? chars[i] : '␣';
-        chip.title = chars[i].trim() ? `Block ${i + 1}` : 'Blank block (space)';
+        chip.title = chars[i].trim() ? `Block ${i + 1} — click to edit the text after it` : 'Blank block (space)';
         blockChips.appendChild(chip);
       }
     }
-    if (chars.length === 0) {
+    if (chars.length === 0 && symbols.length === 0) {
       const hint = document.createElement('span');
       hint.className = 'block-chips-empty';
       hint.textContent = 'Type a word above.';
