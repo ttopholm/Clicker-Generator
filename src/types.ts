@@ -223,6 +223,9 @@ export interface ClickerPart extends MeshData {
   name: string;
   /** 1-based filament slot for slicer color assignment (shared per unique color). */
   extruder?: number;
+  /** Solid volume and surface area (mm³ / mm²) for the material estimate. */
+  volumeMm3?: number;
+  areaMm2?: number;
 }
 
 /** A region with its resolved filament color, ready for the worker. */

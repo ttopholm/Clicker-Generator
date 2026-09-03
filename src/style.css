@@ -2166,3 +2166,24 @@ button.fil-chip:active {
   color: #dc2626;
 }
 :root:not([data-theme="light"]) .plate-note.warn { color: #f87171; }
+/* Material / print-time estimate above the export button */
+.material-note {
+  color: var(--muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 0 4px 8px;
+  line-height: 1.4;
+}
+.material-note strong { color: var(--text); font-weight: 600; }
+/* Autosave note next to the "New design" button */
+.autosave-note {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+  line-height: 1.2;
+}
+/* Secondary STL download under the 3MF button */
+.export-stl { width: 100%; margin-top: 8px; }
