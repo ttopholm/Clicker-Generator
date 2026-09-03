@@ -15,8 +15,9 @@ export const BLOCKS_WALL_MM = 2.6;
 export const BLOCKS_MARGIN_MM = 1.5;
 
 /** Centre-to-centre block distance for a cap size and top↔base tolerance. */
-export const blocksPitch = (sizeMm: number, toleranceMm: number): number =>
-  sizeMm + 2 * toleranceMm + BLOCKS_WALL_MM;
+/** Centre-to-centre distance: cap + slip fit on both sides + the wall between blocks. */
+export const blocksPitch = (sizeMm: number, toleranceMm: number, wallMm = BLOCKS_WALL_MM): number =>
+  sizeMm + 2 * toleranceMm + Math.max(0.8, wallMm);
 
 /** What a symbol block shows: a Lucide icon by name, or an emoji character. */
 export type SymbolSpec = { icon: string; emoji?: undefined } | { emoji: string; icon?: undefined };
