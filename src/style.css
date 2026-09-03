@@ -2156,6 +2156,8 @@ button.fil-chip:active {
   margin-top: 4px;
 }
 
+/* Emoji import card icon */
+.import-card .card-icon-emoji { font-size: 17px; line-height: 1; }
 /* Print plate fit note under the plate selector */
 .plate-note {
   color: var(--muted);

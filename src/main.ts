@@ -11,7 +11,7 @@ import { parseSvg } from './image/logo';
 import { SAMPLES, SVG_SAMPLES } from './image/sample';
 import { parseLetter, importFontFile, FONT_OPTIONS } from './image/letter';
 import { LUCIDE_ICONS, buildSvg } from './image/lucideIcons';
-import { BLOCKS_MARGIN_MM, BLOCKS_WALL_MM, blockItems, blocksPitch, normalizeSymbols, placeBlocks, traceBlocks } from './image/blocks';
+import { BLOCKS_MARGIN_MM, BLOCKS_WALL_MM, blockItems, blocksPitch, normalizeSymbols, placeBlocks, traceBlocks, traceEmoji } from './image/blocks';
 import type {
   BuildParams,
   BuildRegion,
@@ -89,6 +89,7 @@ const store = createStore<UiState>({
   blocksSize: 22,
   blocksGap: BLOCKS_WALL_MM,
   currentIconName: 'circle',
+  currentEmoji: '😀',
   colorMode: 'normal',
   limitedColors: [],
   bodyColorRgb: [240, 240, 240] as RGB,
@@ -384,6 +385,10 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
     currentSvgText = svgText;
     currentSvgName = name;
     store.set({ status: `Selected SVG: ${name}. Click Generate to update.` });
+  },
+  onSelectEmoji: (emoji) => {
+    store.set({ currentEmoji: emoji });
+    reprocess();
   },
   onSelectIcon: (svgText, name) => {
     currentIconText = svgText;
@@ -997,6 +1002,15 @@ function reprocess() {
       store.set({ building: false, status: 'Error: ' + e.message });
       return;
     }
+  } else if (s.importMode === 'emoji') {
+    store.set({ building: true, status: 'Tracing emoji…' });
+    const rs = traceEmoji(s.currentEmoji, 320, s.colorCount);
+    if (!rs) {
+      regionSet = null;
+      store.set({ building: false, status: 'Could not draw that emoji — this device has no glyph for it. Try another one.' });
+      return;
+    }
+    regionSet = rs;
   } else if (s.importMode === 'text') {
     try {
       store.set({ building: true, status: 'Generating Text…' });
@@ -1418,6 +1432,7 @@ function buildProject(): ProjectFile {
       currentSvgName,
       currentIconText,
       currentIconName,
+      currentEmoji: s.currentEmoji,
       colorMode: s.colorMode,
       limitedColors: s.limitedColors,
       bodyColorRgb: s.bodyColorRgb,
@@ -1580,6 +1595,7 @@ async function loadProject(file: File) {
       smoothing: set.smoothing ?? store.get().smoothing,
       removeBg: set.removeBg ?? store.get().removeBg,
       currentIconName: currentIconName || 'circle',
+      currentEmoji: typeof set.currentEmoji === 'string' && set.currentEmoji.trim() ? set.currentEmoji : '😀',
       colorMode: set.colorMode ?? 'normal',
       limitedColors: set.limitedColors ?? [],
       bodyColorRgb: set.bodyColorRgb ?? [120, 124, 130],

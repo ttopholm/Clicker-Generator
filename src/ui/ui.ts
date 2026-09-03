@@ -12,6 +12,9 @@ import { MAX_BLOCKS, blockChars, insertSymbol, looksLikeEmoji, replaceSymbol, ty
  *  offset from this baseline, so a fresh design reads 0. Keep in sync with the store default. */
 const BASE_SOCKET_TOL = 0.4;
 
+// A handful of popular emoji for one-click use (symbol picker and the Emoji tab);
+// anything else can be pasted.
+const QUICK_EMOJI = ['😀', '😍', '😎', '🤣', '😭', '🥳', '👍', '❤️', '🔥', '⭐', '🎉', '🚀', '⚡', '🌈', '🍀', '🐶', '🐱', '🦄', '🍕', '☕', '🎵', '🎮', '⚽', '🏠'];
 /** Rough filament/time estimate for the current parts (see estimateMaterial). */
 export interface MaterialEstimate {
   /** Mass of the solid geometry in PLA, g (what a 100 % infill print would use). */
@@ -70,6 +73,8 @@ export interface UiState {
   /** Wall between neighbouring blocks (and the outer border), mm. */
   blocksGap: number;
   currentIconName: string;
+  /** Emoji tab: the emoji the whole clicker is traced from. */
+  currentEmoji: string;
   colorMode: 'normal' | 'limited';
   limitedColors: RGB[];
   bodyColorRgb: RGB;
@@ -172,6 +177,7 @@ export interface UiCallbacks {
   onSvgUpload(file: File): void;
   onSelectSvg(svgText: string, name: string): void;
   onSelectIcon(svgText: string, name: string): void;
+  onSelectEmoji(emoji: string): void;
   onTextChange(text: string): void;
   onFontSelect(fontId: string): void;
   onImportFont(file: File): void;
@@ -646,7 +652,7 @@ export function createUi(
           </span>
           <span class="card-label">Text</span>
         </button>
-        <button class="import-card import-card-wide" data-mode="blocks" type="button">
+        <button class="import-card" data-mode="blocks" type="button">
           <span class="card-icon">
             <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
               <rect x="2" y="7" width="6" height="10" rx="1.5"/>
@@ -655,6 +661,10 @@ export function createUi(
             </svg>
           </span>
           <span class="card-label">Blocks</span>
+        </button>
+        <button class="import-card" data-mode="emoji" type="button">
+          <span class="card-icon card-icon-emoji" aria-hidden="true">😀</span>
+          <span class="card-label">Emoji</span>
         </button>
       </div>
 
@@ -746,6 +756,18 @@ export function createUi(
           <div id="blockChips" class="block-chips" role="list"></div>
         </div>
         <div id="blocksFontHost"></div>
+      </div>
+
+      <!-- Emoji Panel -->
+      <div id="emojiPanel" class="mode-panel" hidden>
+        <p class="hint-text">One emoji becomes the whole clicker, split into a few filament colours (set the number under Colors). It is drawn with this device's emoji font, so it looks like the emoji you see here.</p>
+        <div class="field">
+          <label>Pick an emoji ${tip('Click one of the popular emoji, or paste any emoji into the field (on a Mac press Ctrl+Cmd+Space, on Windows Win+. for the emoji keyboard). Outline base style follows the emoji\'s silhouette.')}</label>
+          <div class="symbol-emoji-row" id="emojiQuick">
+            ${QUICK_EMOJI.map((e) => `<button type="button" class="emoji-btn" data-emoji="${e}" title="${e}">${e}</button>`).join('')}
+          </div>
+          <input type="text" id="emojiInput" class="symbol-emoji-input" placeholder="…or paste any emoji here" maxlength="12" autocomplete="off" spellcheck="false" />
+        </div>
       </div>
     </div>
 
@@ -1225,6 +1247,17 @@ export function createUi(
     const t = (e.target as HTMLElement).closest('[data-layout]') as HTMLElement | null;
     if (t) cb.onBlocksLayout(t.dataset.layout as BlocksLayout);
   });
+  // --- Emoji tab ---
+  const emojiQuick = $('emojiQuick');
+  emojiQuick.addEventListener('click', (e) => {
+    const b = (e.target as HTMLElement).closest('[data-emoji]') as HTMLElement | null;
+    if (b) cb.onSelectEmoji(b.dataset.emoji!);
+  });
+  const emojiInput = $<HTMLInputElement>('emojiInput');
+  emojiInput.addEventListener('input', () => {
+    const v = emojiInput.value.trim();
+    if (looksLikeEmoji(v)) cb.onSelectEmoji(v);
+  });
   const blocksPerRow = $<HTMLSelectElement>('blocksPerRow');
   blocksPerRow.addEventListener('change', () => cb.onBlocksPerRow(+blocksPerRow.value));
   const blocksLetterScale = $<HTMLInputElement>('blocksLetterScale');
@@ -1252,7 +1285,6 @@ export function createUi(
   });
 
   // A handful of popular emoji for one-click use; anything else can be pasted.
-  const QUICK_EMOJI = ['😀', '😍', '😎', '🤣', '😭', '🥳', '👍', '❤️', '🔥', '⭐', '🎉', '🚀', '⚡', '🌈', '🍀', '🐶', '🐱', '🦄', '🍕', '☕', '🎵', '🎮', '⚽', '🏠'];
 
   // Symbol picker: a small modal over the app with a searchable Lucide grid. Picking an
   // icon sets the slot; "Remove" clears it. Reuses the gallery's .icon styling.
@@ -2268,6 +2300,11 @@ export function createUi(
     $('letterPanel').hidden = state.importMode !== 'text';
     const isBlocks = state.importMode === 'blocks';
     $('blocksPanel').hidden = !isBlocks;
+    $('emojiPanel').hidden = state.importMode !== 'emoji';
+    for (const b of emojiQuick.querySelectorAll<HTMLElement>('[data-emoji]')) {
+      b.classList.toggle('active', b.dataset.emoji === state.currentEmoji);
+    }
+    if (document.activeElement !== emojiInput && emojiInput.value !== state.currentEmoji) emojiInput.value = state.currentEmoji;
     // Blocks share the font list with Text mode: park the one font field in whichever
     // panel is showing.
     const fontField = $('fontField');
@@ -2302,9 +2339,10 @@ export function createUi(
 
     // Hide/show image specific fields in colors section
     const showSmoothingAndBg = state.importMode === 'image';
+    const showColorCount = showSmoothingAndBg || state.importMode === 'emoji';
     const ccountField = $('colorCountField');
     const smoothingField = $('smoothingField');
-    if (ccountField) ccountField.style.display = showSmoothingAndBg ? 'grid' : 'none';
+    if (ccountField) ccountField.style.display = showColorCount ? 'grid' : 'none';
     if (smoothingField) smoothingField.style.display = showSmoothingAndBg ? 'grid' : 'none';
 
     // Update Shape controls. Icons can't use the outline style (their thin

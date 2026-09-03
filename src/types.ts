@@ -79,7 +79,7 @@ export interface PlateFit {
 }
 
 /** Where the design comes from (the right-hand Import Source tabs). */
-export type ImportMode = 'image' | 'svg' | 'icon' | 'text' | 'blocks';
+export type ImportMode = 'image' | 'svg' | 'icon' | 'text' | 'blocks' | 'emoji';
 
 /** Which interaction mode the viewport is in. */
 export type EditMode = 'color' | 'extrude' | 'edges';

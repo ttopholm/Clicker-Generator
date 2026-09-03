@@ -51,8 +51,8 @@ export function looksLikeEmoji(text: string): boolean {
  * (matte → quantize → trace), giving a multi-colour RegionSet normalized to a unit box.
  * Returns null when nothing was drawn (no emoji font, or an unsupported character).
  */
-export function traceEmoji(emoji: string, px = 320): RegionSet | null {
-  const key = emoji.trim();
+export function traceEmoji(emoji: string, px = 320, colors = EMOJI_COLORS): RegionSet | null {
+  const key = `${emoji.trim()}@${colors}`;
   if (emojiCache.has(key)) return emojiCache.get(key)!;
   let result: RegionSet | null = null;
   try {
@@ -67,14 +67,14 @@ export function traceEmoji(emoji: string, px = 320): RegionSet | null {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillStyle = '#000';
-        ctx.fillText(key, px / 2, px / 2 + px * 0.04);
+        ctx.fillText(emoji.trim(), px / 2, px / 2 + px * 0.04);
         const img = ctx.getImageData(0, 0, px, px);
         let inked = 0;
         for (let i = 3; i < img.data.length; i += 4) if (img.data[i] > 40) inked++;
         // A real glyph covers a good part of the box; a missing-glyph box or nothing at all
         // does not qualify.
         if (inked > px * px * 0.02) {
-          const rs = processImage({ data: img.data, width: px, height: px }, EMOJI_COLORS, {
+          const rs = processImage({ data: img.data, width: px, height: px }, colors, {
             removeBg: true,
             smoothing: 0.15,
           });
