@@ -529,11 +529,9 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
 // (reprocess) starts a fresh baseline. Restoring rebuilds the geometry.
 const HISTORY_FIELDS = [
   'palette', 'paletteOverrides', 'partOverrides', 'bodyColorRgb', 'baseColorOverride',
-  'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'baseDepth', 'blocksLayout', 'blocksGap', 'capWidthMm', 'topThickness',
-  'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'baseDepth', 'blocksLayout', 'capWidthMm', 'topThickness',
-  'imageDepth', 'tolerance', 'stemTolerance', 'switches', 'keychain', 'magnets',
-  'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'baseDepth', 'deepExtraMm', 'blocksLayout', 'capWidthMm', 'topThickness',
-  'imageDepth', 'tolerance', 'stemTolerance', 'switches', 'keychain',
+  'componentHeights', 'edgeSettings', 'extrudeChamfer', 'baseShape', 'baseDepth', 'blocksLayout',
+  'blocksGap', 'capWidthMm', 'topThickness', 'imageDepth', 'tolerance', 'stemTolerance',
+  'switches', 'keychain', 'magnets', 'deepExtraMm',
 ] as const;
 let history: string[] = [];
 let histIndex = -1;
