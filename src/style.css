@@ -132,22 +132,6 @@ body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 }
 h1 { font-family: var(--font-display); font-size: 19px; margin: 0; letter-spacing: 0.2px; font-weight: 600; }
 .app-subtitle { color: var(--muted); font-size: 15px; margin: 2px 0 0; font-weight: 400; line-height: 1.35; }
-.app-credit { color: var(--muted); font-size: 14px; margin: 2px 0 0; }
-.app-credit-link {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--accent);
-  text-decoration: none;
-  font-weight: 500;
-  vertical-align: middle;
-}
-.app-credit-link:hover { text-decoration: underline; }
-.credit-logo { width: 16px; height: 16px; border-radius: 4px; object-fit: contain; }
-.only-dark, .only-light { display: none; }
-:root[data-theme="dark"] .only-dark,
-:root:not([data-theme="light"]) .only-dark { display: inline-block; }
-:root[data-theme="light"] .only-light { display: inline-block; }
 
 /* Theme button shows only the icon for the mode you'll switch to */
 #themeToggle svg { display: none; }
