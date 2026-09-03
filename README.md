@@ -100,6 +100,24 @@ npm run typecheck # type-check only, no build
 
 **Stack:** Vite + TypeScript + three.js, with **manifold-3d** (WASM) as the geometry kernel running in a Web Worker. three.js is display-only.
 
+## Run it with Docker
+
+If you have [Docker](https://docs.docker.com/get-docker/) installed you can skip the Node.js setup above. From the project folder:
+
+```bash
+docker compose up -d --build
+```
+
+This builds the site inside a container and serves it with nginx at **http://localhost:8080**. Stop it with `docker compose down`. Set `CLICKER_PORT` in a `.env` file next to `docker-compose.yml` to use another port.
+
+For a hot-reloading dev server inside Docker (edits in the project folder show up in the browser):
+
+```bash
+docker compose --profile dev up dev
+```
+
+and open **http://localhost:5173**.
+
 ## Deploy
 
 Pushing to `main` triggers [`.github/workflows/deploy.yml`](.github/workflows/deploy.yml), which builds the static site and publishes `dist/` to GitHub Pages.

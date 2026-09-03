@@ -1,0 +1,41 @@
+# Run the Clicker Generator locally with Docker.
+#
+#   docker compose up -d --build        ->  http://localhost:8080
+#
+# Optional hot-reloading dev server (edits in this folder reload in the browser):
+#
+#   docker compose --profile dev up dev ->  http://localhost:5173
+#
+# Environment overrides (put them in a .env file next to this compose file):
+#   CLICKER_PORT     host port for the built app (default 8080)
+#   VITE_MARK_SEED   covert model-identity seed baked into the build (default: none)
+#   VITE_BUILD_ID    provenance string in exported 3MF metadata (default: docker)
+services:
+  clicker:
+    build:
+      context: .
+      args:
+        VITE_MARK_SEED: ${VITE_MARK_SEED:-}
+        VITE_BUILD_ID: ${VITE_BUILD_ID:-docker}
+    image: clicker-generator:local
+    ports:
+      - "${CLICKER_PORT:-8080}:80"
+    restart: unless-stopped
+
+  dev:
+    image: node:22-alpine
+    profiles: ["dev"]
+    working_dir: /app
+    command: sh -c "npm install --no-audit --no-fund && npm run dev -- --host 0.0.0.0 --port 5173"
+    environment:
+      # Bind mounts on Docker Desktop don't always deliver file events; polling
+      # keeps hot reload reliable at the cost of a little CPU.
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      - .:/app
+      - dev_node_modules:/app/node_modules
+    ports:
+      - "5173:5173"
+
+volumes:
+  dev_node_modules:
