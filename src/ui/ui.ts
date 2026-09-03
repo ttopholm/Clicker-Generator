@@ -1,5 +1,5 @@
-import type { BaseDepthKind, BaseShapeKind, BlocksLayout, EditMode, EdgeSetting, EdgeStyle, ImportMode, KeychainParams, MagnetParams, PaletteEntry, SwitchPlacement, ViewMode, RGB } from '../types';
-import { DEEP_BASE_EXTRA_MM, FILAMENTS } from '../types';
+import type { BaseDepthKind, BaseShapeKind, BlocksLayout, EdgeSetting, EdgeStyle, EditMode, ImportMode, KeychainParams, MagnetParams, PaletteEntry, PlateFit, RGB, SwitchPlacement, ViewMode } from '../types';
+import { DEEP_BASE_EXTRA_MM, FILAMENTS, PRINT_PLATES } from '../types';
 import type { SectionAxis } from '../viewer/viewer';
 import { SAMPLES } from '../image/sample';
 import type { RgbaImage } from '../image/decode';
@@ -12,8 +12,22 @@ import { MAX_BLOCKS, blockChars, insertSymbol, looksLikeEmoji, replaceSymbol, ty
  *  offset from this baseline, so a fresh design reads 0. Keep in sync with the store default. */
 const BASE_SOCKET_TOL = 0.4;
 
+/** Rough filament/time estimate for the current parts (see estimateMaterial). */
+export interface MaterialEstimate {
+  /** Mass of the solid geometry in PLA, g (what a 100 % infill print would use). */
+  solidG: number;
+  /** Estimated printed mass at 15 % infill, g. */
+  printedG: number;
+  /** Rough print time at typical default-profile speeds, minutes. */
+  minutes: number;
+}
+
 export interface UiState {
   status: string;
+  /** Selected build plate id ('' = none) and whether the print layout fits it. */
+  plateId: string;
+  plateFit: PlateFit | null;
+  material: MaterialEstimate | null;
   building: boolean;
   hasParts: boolean;
   colorCount: number;
@@ -21,6 +35,8 @@ export interface UiState {
   baseShape: BaseShapeKind;
   /** Regular body, or a deeper one with an accessory pocket under the switch. */
   baseDepth: BaseDepthKind;
+  /** Extra depth of the deep base below the socket, mm. */
+  deepExtraMm: number;
   capWidthMm: number;
   topThickness: number;
   imageDepth: number;
@@ -87,6 +103,8 @@ export interface UiCallbacks {
   onShape(kind: BaseShapeKind): void;
   /** Pick the standard body or the deeper one (extra room under the switch). */
   onBaseDepth(kind: BaseDepthKind): void;
+  /** Set how much deeper the deep base is below the socket, mm. */
+  onDeepExtra(mm: number): void;
   onWidth(mm: number): void;
   onTopThickness(mm: number): void;
   onImageDepth(mm: number): void;
@@ -122,12 +140,18 @@ export interface UiCallbacks {
   onRemoveBg(on: boolean): void;
   onView(mode: ViewMode): void;
   onShowSwitch(on: boolean): void;
+  /** Pick the build plate to outline under the model ('' = none). */
+  onPlate(id: string): void;
   onSection(axis: SectionAxis, pos: number): void;
   onExport(): void;
+  /** ZIP of binary STL files (top, base and every coloured part). */
+  onExportStl(): void;
   onRenderPng(): void;
   onAiPrompt(): void;
   onSaveProject(): void;
   onLoadProject(file: File): void;
+  /** Forget the autosaved design and start over. */
+  onNewDesign(): void;
   onBodyColor(hex: string): void;
 
   // New callbacks for vector modes
@@ -236,6 +260,14 @@ export function createUi(
         <span class="switch-label">Show MX switch ${tip('Shows a reference MX switch in the preview so you can check the fit. It is not part of the exported model.')}</span>
         <label class="toggle"><input id="showswitch" type="checkbox" /><span class="slider"></span></label>
       </div>
+      <div class="field" style="margin-top: 12px; margin-bottom: 0;">
+        <label for="plateSelect">Print plate ${tip('Outlines the build plate under the model and checks that the exported print layout (base and top side by side) fits on it in either orientation.')}</label>
+        <select id="plateSelect">
+          <option value="">No plate outline</option>
+          ${PRINT_PLATES.map((p) => `<option value="${p.id}">${p.name}</option>`).join('')}
+        </select>
+        <div id="plateNote" class="plate-note" hidden></div>
+      </div>
     </div>
 
     <div class="section" id="baseStyleSection">
@@ -270,6 +302,13 @@ export function createUi(
           <button class="tab active" data-depth="standard" type="button">Standard</button>
           <button class="tab" data-depth="deep" type="button">Deep</button>
         </div>
+      </div>
+      <div class="prow-stacked" id="deepExtraRow" style="margin-top: 12px;" hidden>
+        <div class="prow-header">
+          <label for="deepExtra">Extra depth ${tip('How much taller the deep base is below the switch, in mm. The pocket under the switch grows by the same amount. 5.17 mm fits the LED clicker assembly; go deeper for thicker modules or batteries.')}</label>
+          <input type="text" class="val" id="deepExtraVal" />
+        </div>
+        <input type="range" id="deepExtra" min="3" max="12" step="0.1" />
       </div>
     </div>
 
@@ -686,7 +725,12 @@ export function createUi(
     </div>
 
     <div class="sidebar-sticky-footer">
+      <div id="materialNote" class="material-note" hidden></div>
       <button class="primary" id="export" style="width:100%;">Download 3MF</button>
+      <button class="secondary utility-btn export-stl" id="exportStl" type="button" title="ZIP with binary STL files: the base, the top (flipped for printing) and every coloured part on its own. STL has no colours, so use the 3MF when your slicer supports it.">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>Download STL (zip)</span>
+      </button>
       <div id="projectSettingsContainer">
         <div class="btn-row">
           <button id="saveProj" class="secondary utility-btn" type="button" aria-label="Save project">
@@ -698,6 +742,13 @@ export function createUi(
             <span>Load project</span>
           </button>
           <input type="file" id="projFile" accept="application/json" hidden />
+        </div>
+        <div class="btn-row">
+          <button id="newProj" class="secondary utility-btn" type="button" aria-label="Start a new design" title="Your design is saved in this browser automatically. This clears it and starts over.">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/></svg>
+            <span>New design</span>
+          </button>
+          <span class="autosave-note">Autosaved in this browser</span>
         </div>
         <div class="btn-row footer-utility-row">
           <button id="helpToggle" class="secondary utility-btn" type="button" aria-label="Show intro and help">
@@ -947,6 +998,7 @@ export function createUi(
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = 'font-grid-btn';
+    btn.dataset.fontId = font.id;
     btn.textContent = font.name;
     btn.style.fontFamily = `"${font.id.replace('bundled-', '')}", "${font.name}", sans-serif`;
     
@@ -961,6 +1013,17 @@ export function createUi(
 
   FONT_OPTIONS.forEach(addFontOption);
   loadBundledFonts(addFontOption);
+
+  /** Reflect a restored/loaded text design in the Text panel (field + active font). */
+  function setTextSource(text: string, fontId: string) {
+    letterText.value = text;
+    const btn = fontGrid.querySelector<HTMLElement>(`[data-font-id="${CSS.escape(fontId)}"]`);
+    if (btn && btn !== selectedFontBtn) {
+      selectedFontBtn?.classList.remove('active');
+      btn.classList.add('active');
+      selectedFontBtn = btn;
+    }
+  }
 
   // --- Generate buttons ---
   $('generateSvg').addEventListener('click', () => cb.onGenerate());
@@ -1126,6 +1189,8 @@ export function createUi(
     const t = (e.target as HTMLElement).closest('[data-depth]') as HTMLElement | null;
     if (t) cb.onBaseDepth(t.dataset.depth as BaseDepthKind);
   });
+  const deepExtra = $<HTMLInputElement>('deepExtra');
+  deepExtra.addEventListener('input', () => cb.onDeepExtra(+deepExtra.value));
 
   // --- Blocks: text, layout, sizes, symbol slots ---
   const blocksText = $<HTMLInputElement>('blocksText');
@@ -1377,6 +1442,8 @@ export function createUi(
   $('magnetDiaPlus').addEventListener('click', () => cb.onMagnetsDiameter(0.5));
   $('magnetDepthMinus').addEventListener('click', () => cb.onMagnetsDepth(-0.5));
   $('magnetDepthPlus').addEventListener('click', () => cb.onMagnetsDepth(0.5));
+  const plateSelect = $<HTMLSelectElement>('plateSelect');
+  plateSelect.addEventListener('change', () => cb.onPlate(plateSelect.value));
 
   $('keychainRotMinus').addEventListener('click', () => cb.onKeychainRotate(-15));
   $('keychainRotPlus').addEventListener('click', () => cb.onKeychainRotate(15));
@@ -1432,6 +1499,7 @@ export function createUi(
   bindValInput('widthVal', width, cb.onWidth);
   bindValInput('topthickVal', topthick, cb.onTopThickness);
   bindValInput('imgdepthVal', imgdepth, cb.onImageDepth);
+  bindValInput('deepExtraVal', deepExtra, cb.onDeepExtra);
   bindValInput('blocksLetterScaleVal', blocksLetterScale, (v) => cb.onBlocksLetterScale(v / 100));
   bindValInput('blocksSizeVal', blocksSize, cb.onBlocksSize);
 
@@ -1448,8 +1516,12 @@ export function createUi(
 
   // --- Export and Utility actions ---
   $('export').addEventListener('click', () => cb.onExport());
+  $('exportStl').addEventListener('click', () => cb.onExportStl());
   // render PNG and AI prompt buttons removed per design
   $('saveProj').addEventListener('click', () => cb.onSaveProject());
+  $('newProj').addEventListener('click', () => {
+    if (confirm('Start a new design? The design saved in this browser will be cleared.')) cb.onNewDesign();
+  });
   const projFile = $<HTMLInputElement>('projFile');
   $('loadProj').addEventListener('click', () => projFile.click());
   projFile.addEventListener('change', () => {
@@ -2142,6 +2214,19 @@ export function createUi(
     $<HTMLInputElement>('removebg').checked = state.removeBg;
     $<HTMLInputElement>('removebgSvg').checked = state.removeBg;
     $<HTMLInputElement>('showswitch').checked = state.showSwitch;
+    if (plateSelect.value !== state.plateId) plateSelect.value = state.plateId;
+    const plateNote = $('plateNote');
+    if (state.plateFit && state.hasParts) {
+      const f = state.plateFit;
+      const need = `${Math.round(f.needW)} × ${Math.round(f.needD)} mm`;
+      plateNote.textContent = f.fits
+        ? `Print layout ${need} fits the ${f.plate.w} × ${f.plate.d} mm plate.`
+        : `Print layout ${need} does not fit the ${f.plate.w} × ${f.plate.d} mm plate. Make the design smaller, or place the top and base on separate plates in the slicer.`;
+      plateNote.classList.toggle('warn', !f.fits);
+      plateNote.hidden = false;
+    } else {
+      plateNote.hidden = true;
+    }
 
     // Update Import Mode tabs and panels
     for (const b of importTabs.querySelectorAll<HTMLElement>('[data-mode]')) {
@@ -2200,6 +2285,9 @@ export function createUi(
     for (const b of baseDepthTabs.querySelectorAll<HTMLElement>('[data-depth]')) {
       b.classList.toggle('active', b.dataset.depth === state.baseDepth);
     }
+    $('deepExtraRow').hidden = state.baseDepth !== 'deep';
+    deepExtra.value = String(state.deepExtraMm);
+    setVal('deepExtraVal', state.deepExtraMm.toFixed(2).replace(/\.?0+$/, '') + ' mm');
 
     // Update View tabs
     for (const b of viewTabs.querySelectorAll<HTMLElement>('button')) {
@@ -2208,6 +2296,20 @@ export function createUi(
 
     const exportBtn = $<HTMLButtonElement>('export');
     exportBtn.disabled = !state.hasParts || state.building;
+    $<HTMLButtonElement>('exportStl').disabled = exportBtn.disabled;
+
+    // Rough material + time estimate for the current parts.
+    const noteEl = $('materialNote');
+    const m = state.material;
+    if (m && state.hasParts) {
+      const fmtG = (g: number) => (g < 10 ? g.toFixed(1) : Math.round(g).toString()) + ' g';
+      const mins = Math.max(1, Math.round(m.minutes));
+      const time = mins >= 60 ? `${Math.floor(mins / 60)} h ${String(mins % 60).padStart(2, '0')} min` : `${mins} min`;
+      noteEl.innerHTML = `<strong>≈ ${fmtG(m.printedG)} PLA</strong> at 15&nbsp;% infill · ${fmtG(m.solidG)} solid · ~${time} ${tip('Rough estimate from the model volume: perimeters and top/bottom layers plus 15 % sparse infill, PLA at 1.24 g/cm³, and a typical default-profile speed. Your slicer knows the real numbers.')}`;
+      noteEl.hidden = false;
+    } else {
+      noteEl.hidden = true;
+    }
 
     // Toggle loading overlay
     const overlay = $('loadingOverlay');
@@ -2406,6 +2508,7 @@ export function createUi(
     hexRgb, 
     showColorPopoverAt, 
     addUploadedSvg, 
+    setTextSource,
     addFontOption: (font: FontOption) => { 
       addFontOption(font); 
       // Click the newly added font to select it

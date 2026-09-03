@@ -503,7 +503,8 @@ export function buildClicker(
   // accessory — the LED clicker assembly that slides onto the switch pins — can sit
   // beneath the switch's bottom housing. Everything above the plate (cap, well,
   // border, travel, fit) is untouched.
-  const extraDepth = params.baseDepth === 'deep' ? DEEP_BASE_EXTRA_MM : 0;
+  const extraDepth =
+    params.baseDepth === 'deep' ? Math.max(0, params.deepExtraMm ?? DEEP_BASE_EXTRA_MM) : 0;
   const bodyBottomZ = socketBB.min[2] - extraDepth - params.floorThickness;
   const maxProud = Math.max(0.4, slabTopZ - cavityFloorZ - 1.0); // leave ≥1 mm of border
   const capProud = Math.max(0.4, Math.min(params.capProud, maxProud));
@@ -1001,11 +1002,21 @@ export function buildClicker(
     name: string,
   ): ClickerPart {
     const mesh = solid.getMesh();
+    let volumeMm3: number | undefined;
+    let areaMm2: number | undefined;
+    try {
+      volumeMm3 = solid.volume();
+      areaMm2 = solid.surfaceArea();
+    } catch {
+      /* older kernel builds: no estimate */
+    }
     return {
       kind,
       group,
       colorRgb,
       name,
+      volumeMm3,
+      areaMm2,
       numProp: mesh.numProp,
       vertProperties: new Float32Array(mesh.vertProperties),
       triVerts: new Uint32Array(mesh.triVerts),

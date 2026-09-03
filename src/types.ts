@@ -54,6 +54,30 @@ export type BaseDepthKind = 'standard' | 'deep';
 export const DEEP_BASE_EXTRA_MM = 5.17;
 export type ViewMode = 'assembled' | 'exploded' | 'section';
 
+/** Build plates the preview can outline under the model (usable area, mm). */
+export interface PrintPlate {
+  id: string;
+  name: string;
+  w: number;
+  d: number;
+}
+export const PRINT_PLATES: PrintPlate[] = [
+  { id: 'a1mini', name: 'Bambu A1 mini · 180 × 180 mm', w: 180, d: 180 },
+  { id: 'a1', name: 'Bambu A1 / P1 / X1 · 256 × 256 mm', w: 256, d: 256 },
+  { id: 'h2d', name: 'Bambu H2D · 350 × 320 mm', w: 350, d: 320 },
+  { id: 'mk4', name: 'Prusa MK4 / MK3 · 250 × 210 mm', w: 250, d: 210 },
+  { id: 'prusamini', name: 'Prusa MINI · 180 × 180 mm', w: 180, d: 180 },
+  { id: 'ender3', name: 'Creality Ender-3 · 220 × 220 mm', w: 220, d: 220 },
+];
+
+/** Whether the exported print layout (base and top side by side) fits the chosen plate. */
+export interface PlateFit {
+  needW: number;
+  needD: number;
+  plate: PrintPlate;
+  fits: boolean;
+}
+
 /** Where the design comes from (the right-hand Import Source tabs). */
 export type ImportMode = 'image' | 'svg' | 'icon' | 'text' | 'blocks';
 
@@ -161,6 +185,8 @@ export interface BuildParams {
   baseShape: BaseShapeKind;
   /** Regular body, or a deeper one with an accessory pocket under the switch. */
   baseDepth: BaseDepthKind;
+  /** Extra depth of the deep base below the socket, mm (default DEEP_BASE_EXTRA_MM). */
+  deepExtraMm?: number;
   /** Blocks mode. When set, `regions`/`outline`/`switches` are ignored and one square
    *  cap with its own switch is built per cell on a shared straight-edged body. */
   blocks?: BlocksParams;
@@ -214,6 +240,9 @@ export interface ClickerPart extends MeshData {
   name: string;
   /** 1-based filament slot for slicer color assignment (shared per unique color). */
   extruder?: number;
+  /** Solid volume and surface area (mm³ / mm²) for the material estimate. */
+  volumeMm3?: number;
+  areaMm2?: number;
 }
 
 /** A region with its resolved filament color, ready for the worker. */
