@@ -6,6 +6,7 @@ import { loadFileToImage, type RgbaImage } from './image/decode';
 import { processImage } from './image/pipeline';
 import { runWizard } from './ui/wizard';
 import { downloadThreeMF } from './export/threemfExport';
+import { downloadStlZip } from './export/stlExport';
 import { parseSvg } from './image/logo';
 import { SAMPLES, SVG_SAMPLES } from './image/sample';
 import { parseLetter, importFontFile } from './image/letter';
@@ -286,11 +287,12 @@ const ui = createUi(sidebarLeft, sidebarRight, statusEl, {
   onExport: () => {
     if (!latestParts.length) return;
     downloadThreeMF(latestParts, 'clicker.3mf');
-    // First download of the session → big license modal; later ones → quiet corner toast.
-    // The counter is in-memory, so a page refresh re-shows the big modal on the next download.
-    downloadCount += 1;
-    if (downloadCount === 1) showLicenseModal();
-    else showLicenseToast();
+    afterDownload();
+  },
+  onExportStl: () => {
+    if (!latestParts.length) return;
+    downloadStlZip(latestParts, 'clicker-stl.zip');
+    afterDownload();
   },
   onRenderPng: async () => {
     const blob = await viewer.renderToPng();
@@ -1087,6 +1089,14 @@ function rgbToHex(rgb: RGB): string {
     rgb.map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('')
   );
 }
+// First download of the session → big license modal; later ones → quiet corner toast.
+// The counter is in-memory, so a page refresh re-shows the big modal on the next download.
+function afterDownload() {
+  downloadCount += 1;
+  if (downloadCount === 1) showLicenseModal();
+  else showLicenseToast();
+}
+
 function firstLine(s: string): string {
   return s.split('\n')[0];
 }
